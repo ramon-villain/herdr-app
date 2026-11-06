@@ -2157,7 +2157,7 @@ impl AppWindow {
                 let record = core.call("terminal.get", json!({"terminal":address}))?;
                 let machine = address.split_once('/').map(|(m, _)| m);
                 if !adoptable(&record, &wanted_space, wanted_tab.as_deref(), machine) { return Ok(false); }
-                if record["keep"].as_bool() != Some(true) {
+                if needs_keep(&record) {
                     core.call("terminal.keep", json!({"terminal":address,"keep":true}))?;
                 }
                 anyhow::Ok(true)
@@ -2183,11 +2183,11 @@ impl AppWindow {
         let machine = addr.split_once('/').map(|(m, _)| m.to_owned());
         let pane = self.model.fresh_id_on("p", machine.as_deref());
         let ctx_id = ctx.map(str::to_owned).unwrap_or_else(|| self.model.fresh_id_on("tb", machine.as_deref()));
-        // Found by its labels: no names, so they're called Herdr's way.
-        let new_ctx = Tab::new(&ctx_id, "", &pane, addr);
+        // Found by its labels: named by `herdr.tab.name` / `herdr.space.name` when set, else Herdr's way.
+        let rec = self.live.get(addr);
+        let new_ctx = Tab::new(&ctx_id, &label_name(rec, "herdr.tab.name"), &pane, addr);
         if self.model.space(space).is_none() {
             // Its live folder may not be read yet: the core's record has it.
-            let rec = self.live.get(addr);
             let folder = self
                 .cwds
                 .get(addr)
@@ -2195,7 +2195,7 @@ impl AppWindow {
                 .or_else(|| rec.and_then(|r| r.get("foreground").and_then(|f| f.get("cwd")).or_else(|| r.get("cwd"))).and_then(Value::as_str).map(str::to_owned))
                 .unwrap_or_else(|| mods::home().to_string_lossy().into_owned());
             let active = self.model.active.clone();
-            self.model.add_space(space, "", &folder, new_ctx);
+            self.model.add_space(space, &label_name(rec, "herdr.space.name"), &folder, new_ctx);
             self.model.space_mut(space).unwrap().machine = machine;
             self.model.active = active.or(Some(space.to_owned()));
             return;
@@ -4772,6 +4772,18 @@ fn adoptable(record: &Value, space: &str, tab: Option<&str>, machine: Option<&st
         && labeled_tab == tab.map(|t| crate::mirror::local(t, machine))
 }
 
+/// Whether adopting a terminal turns core keep on: always, unless the starter
+/// labeled it `herdr.keep=off` so that a core restart leaves it finished
+/// instead of giving its pane a plain shell.
+fn needs_keep(record: &Value) -> bool {
+    record["keep"].as_bool() != Some(true) && record.pointer("/labels/herdr.keep").and_then(Value::as_str) != Some("off")
+}
+
+/// The name a starter gave a new space or tab through a label, else empty (Herdr's own name).
+fn label_name(record: Option<&Value>, key: &str) -> String {
+    record.and_then(|r| r.get("labels")).and_then(|l| l.get(key)).and_then(Value::as_str).unwrap_or_default().to_owned()
+}
+
 fn program_of(report: &Value, argv: Option<&Value>) -> Value {
     let app = report.get("app").and_then(Value::as_str);
     let argv: Vec<String> = argv.and_then(Value::as_array).into_iter().flatten().filter_map(|a| a.as_str().map(str::to_owned)).collect();
@@ -5785,6 +5797,27 @@ export default class Probe extends View {
         assert!(!super::adoptable(&record("finished"), "sp1", Some("tb1"), None));
         assert!(!super::adoptable(&record("live"), "sp2", Some("tb1"), None));
         assert!(!super::adoptable(&record("live"), "sp1", Some("tb2"), None));
+    }
+
+    #[test]
+    fn adoption_turns_keep_on_unless_the_starter_labeled_it_off() {
+        let record = |keep: bool, label: Option<&str>| {
+            let labels = label.map_or(serde_json::json!({}), |v| serde_json::json!({ "herdr.keep": v }));
+            serde_json::json!({ "keep": keep, "labels": labels })
+        };
+        assert!(super::needs_keep(&record(false, None)));
+        assert!(!super::needs_keep(&record(true, None)));
+        assert!(!super::needs_keep(&record(false, Some("off"))));
+        assert!(super::needs_keep(&record(false, Some("on"))));
+    }
+
+    #[test]
+    fn a_new_space_or_tab_is_named_by_its_label() {
+        let record = serde_json::json!({ "labels": { "herdr.tab.name": "Fix login", "herdr.space.name": "" } });
+        assert_eq!(super::label_name(Some(&record), "herdr.tab.name"), "Fix login");
+        assert_eq!(super::label_name(Some(&record), "herdr.space.name"), "");
+        assert_eq!(super::label_name(Some(&record), "herdr.other"), "");
+        assert_eq!(super::label_name(None, "herdr.tab.name"), "");
     }
 
 }
