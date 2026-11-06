@@ -142,7 +142,10 @@ the highlighted line shows where it will land.
   `hc run --keep --label herdr.space=<id> --label herdr.tab=<id> -- claude`.
   Labels use ids local to that machine; remote ids shown by the app have a
   `<machine>/` prefix (strip it when writing labels on that machine). Adoption
-  also enables core keep; `terminal.park` removes the pane and disables keep.
+  also enables core keep, unless the terminal carries `herdr.keep=off` (a core
+  restart then ends it instead of giving its pane a shell); `terminal.park`
+  removes the pane and disables keep. A new space or tab is named by the
+  labels `herdr.space.name` and `herdr.tab.name` when present.
   When a core change is needed, `terminal.keep` / `terminal.park` acknowledge
   with `pending: true`, then apply after the machine replies; failures show a toast.
   Normal quit waits for pending terminal changes and layout writes; remote waits are bounded.
