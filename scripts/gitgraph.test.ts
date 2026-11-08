@@ -279,6 +279,8 @@ test("a commit lists its files against the first parent and a root commit agains
   const merge = await reader.commit(work, all[0].sha, null);
   expect(merge.message).toBe("merge feat");
   expect(merge.files.map((f: any) => [f.status, f.path])).toEqual([["M", "a.ts"]]);
+  expect(merge.files[0]).toMatchObject({ add: 0, del: 0 });
+  await merge.stats;
   expect(merge.files[0]).toMatchObject({ add: 2, del: 1 });
   const root = await reader.commit(work, all.find((c: any) => c.subject === "first").sha, null);
   expect(root.parents).toEqual([]);
@@ -444,4 +446,173 @@ test("a real stash is listed with its base commit", async () => {
   const { work } = await fixture();
   const info = await reader.repo(work, null);
   expect(info.stashes[0].base).toBe(await git(work, "rev-parse", "HEAD"));
+});
+
+// ---- speed: what is read together, kept and skipped
+
+test("a commit's file lists start with its message when the parents are known, and the counts follow the list", async () => {
+  const calls: string[] = [];
+  const release: Record<string, () => void> = {};
+  const fake = createReader({
+    exec: (_c: string, args: string[]) => {
+      const verb = args.find((a) => a === "log" || a === "diff") + (args.includes("--numstat") ? "-numstat" : "");
+      calls.push(verb);
+      return new Promise((resolve) => {
+        release[verb] = () => resolve({
+          code: 0, stderr: "",
+          stdout: verb === "log" ? "abc\x1fp1\x1fAnn\x1fa@b\x1f1700000000\x1fsubject" : verb === "diff-numstat" ? "3\t1\tsrc/a.ts\0" : "M\0src/a.ts\0",
+        });
+      });
+    },
+  });
+  const pending = fake.commit("/r", "abc", null, ["p1"]);
+  // log, name-status and numstat are all running before any of them answered
+  expect(calls.sort()).toEqual(["diff", "diff-numstat", "log"]);
+  release.log(); release.diff();
+  const detail = await pending;
+  expect(detail.files).toEqual([{ status: "M", path: "src/a.ts", add: 0, del: 0 }]);
+  release["diff-numstat"]();
+  await detail.stats;
+  expect(detail.files[0]).toMatchObject({ add: 3, del: 1 });
+});
+
+test("a commit without a parents hint still waits for its message to name the parent", async () => {
+  const calls: string[] = [];
+  const fake = createReader({
+    exec: async (_c: string, args: string[]) => {
+      calls.push(args.find((a) => a === "log" || a === "diff")!);
+      return { code: 0, stderr: "", stdout: args.includes("log") ? "abc\x1fp1\x1fAnn\x1fa@b\x1f1700000000\x1fsubject" : "" };
+    },
+  });
+  const pending = fake.commit("/r", "abc", null);
+  expect(calls).toEqual(["log"]);
+  await pending;
+  expect(calls).toEqual(["log", "diff", "diff"]);
+});
+
+test("changed words are found only for the rows that are read, and equal what the eager version found", () => {
+  const lines = ["@@ -1,3 +1,3 @@", "-const a = 1;", "-let b = 2;", "+const a = 2;", "+let b = 3;"];
+  const rows = markWords(diffRows(lines));
+  expect(rows.map((r: any) => r.mark)).toEqual([undefined, [10, 11], [8, 9], [10, 11], [8, 9]]);
+  expect(Object.keys(rows[1])).toContain("mark");
+});
+
+function cachedGraph(overrides: Record<string, any> = {}) {
+  const calls = { commit: 0, fileDiff: [] as string[] };
+  const git = {
+    commit: async (_root: string, sha: string) => {
+      calls.commit++;
+      const files = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].map((n) => `${n}.ts`).map((path) => ({ path, status: "M", add: 0, del: 0 }));
+      return { sha, parents: ["p"], from: "p", files, total: 10, stats: Promise.resolve() };
+    },
+    fileDiff: async (_d: any, file: any) => { calls.fileDiff.push(file.path); return { lines: ["@@ -1 +1 @@", "-a", "+b"], cut: false }; },
+    ...overrides,
+  };
+  const g = new Graph(git, () => ({ dir: "/r", on: null }), { scroll_to_item() {} });
+  g.info = { root: "/r", heads: [], remotes: [], tags: [], worktrees: [], stashes: [], bySha: new Map() };
+  g.commits = [{ sha: "s1", parents: ["p"] }, { sha: "s2", parents: ["p"] }]; g.index = new Map([["s1", 0], ["s2", 1]]);
+  return { g, calls };
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test("selecting a commit reads the first files' diffs ahead, and opening one then draws at once", async () => {
+  const { g, calls } = cachedGraph();
+  await g.select("s1", cx);
+  await settle();
+  expect(calls.fileDiff).toEqual(["a", "b", "c", "d", "e", "f", "g", "h"].map((n) => `${n}.ts`));
+  const opened = g.openFile("b.ts", cx);
+  // the rows are there before the open call has yielded
+  expect(g.view?.rows.map((r: any) => r.kind)).toEqual(["@", "-", "+"]);
+  await opened;
+  expect(calls.fileDiff).toHaveLength(8);
+});
+
+test("a commit selected again is not read again, and an open during a read joins it", async () => {
+  const { g, calls } = cachedGraph();
+  await g.select("s1", cx);
+  await g.select("s2", cx);
+  await g.select("s1", cx);
+  await settle();
+  expect(calls.commit).toBe(2);
+  const before = calls.fileDiff.length;
+  await Promise.all([g.openFile("j.ts", cx), g.openFile("j.ts", cx)]);
+  expect(calls.fileDiff.length - before).toBe(1);
+  await g.openFile("j.ts", cx);
+  expect(calls.fileDiff.length - before).toBe(1);
+});
+
+test("the full-file view is its own cache entry, and a failed read is not kept", async () => {
+  let fail = true;
+  const { g, calls } = cachedGraph({
+    fileDiff: async (_d: any, file: any, _on: any, _root: any, { full }: any) => { calls.fileDiff.push(`${file.path}:${full}`); if (fail && full) throw new Error("x"); return { lines: ["@@ -1 +1 @@", "+a"], cut: false }; },
+  });
+  await g.select("s1", cx);
+  await g.openFile("d.ts", cx);
+  g.setMode("file", cx);
+  await settle();
+  expect(g.view.rows[0].text).toMatch(/Cannot preview/);
+  fail = false;
+  g.setMode("diff", cx);
+  g.setMode("file", cx);
+  await settle();
+  expect(g.view.rows.map((r: any) => r.kind)).toEqual(["@", "+"]);
+  expect(calls.fileDiff.filter((c) => c === "d.ts:true")).toHaveLength(2);
+});
+
+test("the file rows are built once per commit and layout", async () => {
+  const { g } = cachedGraph();
+  await g.select("s1", cx);
+  const flat = g.fileItems();
+  expect(g.fileItems()).toBe(flat);
+  g.fileMode = "tree";
+  expect(g.fileItems()).not.toBe(flat);
+  expect(g.fileItems()).toBe(g.fileItems());
+  expect(g.fileItems().every((item: any) => item.type === "file" || item.type === "folder")).toBe(true);
+});
+
+test("the poll reloads when the probe changes and otherwise only refreshes the uncommitted files", async () => {
+  let signature: string | null = "a";
+  const reloads: string[] = [];
+  const g: any = new Graph({ probe: async () => signature, read: async () => ({ ok: true, uncommittedTotal: 0, uncommitted: [] }) }, () => ({ dir: "/r", on: null }), {});
+  g.info = { root: "/r" }; g.signature = "a"; g.worktree = "/r";
+  g.load = async () => { reloads.push("load"); };
+  await g.poll(cx);
+  expect(reloads).toEqual([]);
+  signature = "b";
+  await g.poll(cx);
+  expect(reloads).toEqual(["load"]);
+  signature = null;
+  await g.poll(cx);
+  expect(reloads).toEqual(["load"]);
+});
+
+test("an unchanged uncommitted state does not redraw", async () => {
+  let notified = 0;
+  const snap = { ok: true, sha: "x", ahead: 0, behind: 0, uncommittedTotal: 1, uncommitted: [{ path: "a", status: "M", add: 1, del: 0 }] };
+  const g: any = new Graph({ read: async () => ({ ...snap }) }, () => ({ dir: "/r", on: null }), {});
+  g.info = { root: "/r" }; g.worktree = "/r";
+  const counting = { notify() { notified++; } };
+  await g.loadWip(counting);
+  await g.loadWip(counting);
+  expect(notified).toBe(1);
+  snap.uncommittedTotal = 2;
+  await g.loadWip(counting);
+  expect(notified).toBe(2);
+});
+
+test("the probe is equal while nothing moved and differs after a commit, a branch, a tag or a stash", async () => {
+  const { work } = await fixture();
+  const seen = [await reader.probe(work, null)];
+  expect(await reader.probe(work, null)).toBe(seen[0]);
+  await commit(work, "n.txt", "n\n", "next");
+  seen.push(await reader.probe(work, null));
+  await git(work, "branch", "other");
+  seen.push(await reader.probe(work, null));
+  await git(work, "tag", "v9");
+  seen.push(await reader.probe(work, null));
+  await writeFile(join(work, "m.txt"), "changed\n");
+  await git(work, "stash");
+  seen.push(await reader.probe(work, null));
+  expect(new Set(seen).size).toBe(5);
+  expect((await reader.probe(join(work, ".."), null))).toBeNull();
 });

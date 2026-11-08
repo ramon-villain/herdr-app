@@ -764,6 +764,11 @@ fn exec_limit(options: Option<&HostValue>) -> Result<Duration, HostError> {
     }
 }
 
+/// A git read takes 5 to 50 ms and a person waits on it, so a command's first 100 ms are checked every millisecond. A fixed 10 ms sleep added up to 10 ms to every read.
+fn exit_check_interval(elapsed: Duration) -> Duration {
+    Duration::from_millis(if elapsed < Duration::from_millis(100) { 1 } else { 10 })
+}
+
 fn run_blocking(command: &str, args: &[String], cwd: Option<String>, limit: Duration) -> Result<(i32, String, String), String> {
     use std::io::Read;
     let mut child = crate::spawn::command(command)
@@ -795,7 +800,7 @@ fn run_blocking(command: &str, args: &[String], cwd: Option<String>, limit: Dura
                 let _ = child.wait();
                 return Err(format!("{command} took longer than {} s and was stopped", limit.as_secs_f64()));
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => std::thread::sleep(exit_check_interval(start.elapsed())),
             Err(e) => return Err(e.to_string()),
         }
     };
@@ -1214,6 +1219,14 @@ mod tests {
             assert!(exec_limit(Some(&options(ms))).is_err());
         }
         assert!(exec_limit(Some(&HostObject::new().field("timeout", "30").into())).is_err());
+    }
+
+    #[test]
+    fn a_short_command_is_checked_every_millisecond_and_a_long_one_less_often() {
+        assert_eq!(exit_check_interval(Duration::ZERO), Duration::from_millis(1));
+        assert_eq!(exit_check_interval(Duration::from_millis(99)), Duration::from_millis(1));
+        assert_eq!(exit_check_interval(Duration::from_millis(100)), Duration::from_millis(10));
+        assert_eq!(exit_check_interval(Duration::from_secs(20)), Duration::from_millis(10));
     }
 
     #[cfg(unix)]

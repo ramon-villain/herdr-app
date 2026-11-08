@@ -71,7 +71,7 @@ export function wordDiff(a, b) {
   return { old: [start, start + len(x, head, x.length - tail)], next: [startB, startB + len(y, head, y.length - tail)] };
 }
 
-/** Pairs each run of removed lines with the added run that follows it and marks the words that changed. */
+/** Pairs each run of removed lines with the added run that follows it. A pair's changed words are found when a row's `mark` is first read, so only the rows drawn pay for it. */
 export function markWords(rows) {
   const out = rows.map((r) => ({ ...r }));
   for (let i = 0; i < out.length;) {
@@ -82,8 +82,11 @@ export function markWords(rows) {
     while (k < out.length && out[k].kind === "+") k++;
     const pairs = Math.min(j - i, k - j);
     for (let n = 0; n < pairs; n++) {
-      const diff = wordDiff(out[i + n].text, out[j + n].text);
-      if (diff) { out[i + n].mark = diff.old; out[j + n].mark = diff.next; }
+      const removed = out[i + n], added = out[j + n];
+      let diff;
+      const words = () => (diff === undefined ? (diff = wordDiff(removed.text, added.text)) : diff);
+      Object.defineProperty(removed, "mark", { enumerable: true, get: () => words()?.old });
+      Object.defineProperty(added, "mark", { enumerable: true, get: () => words()?.next });
     }
     i = k;
   }

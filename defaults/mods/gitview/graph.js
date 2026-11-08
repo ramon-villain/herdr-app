@@ -1,6 +1,6 @@
 // State and loading for the whole-tab Git graph. It only reads, through the shared reader in git.js.
 import { layoutLanes } from "./lanes.js";
-import { agoLabel, branchTree, hunkStarts, markWords, stepHunk } from "./model.js";
+import { agoLabel, branchTree, fileTree, hunkStarts, markWords, stepHunk } from "./model.js";
 import { diffRows } from "./git.js";
 
 // Every page walks the whole history to sort it, whatever its size, so the first page is small for a quick first paint and later ones are big.
@@ -9,6 +9,12 @@ const PAGE = 5000;
 const MAX_REVEAL_PAGES = 40;
 const LISTED = 3000;
 const WORKTREE_READS = 3;
+
+// A commit never changes, so what was read for it stays right until the cache drops it.
+const KEPT_DETAILS = 40;
+const KEPT_VIEWS = 16;
+// Files of a selected commit whose diff is read before anyone asks, so the first click on one draws at once.
+const PREFETCHED_FILES = 8;
 
 // The left tree's big sections start closed: thousands of remote branches and tags are for searching, not scrolling.
 const OPEN = { local: true, remote: false, worktrees: true, stashes: true, tags: false };
@@ -36,6 +42,7 @@ export class Graph {
     this.query = ""; this.matches = null; this.onlyMatches = false; this.searching = false; this.hitAt = -1; this.hitCache = null; this.searchRun = 0;
     this.fileMode = "path"; this.wantMore = false; this.signature = null; this.leftCache = null;
     this.run = 0; this.picking = false;
+    this.details = new Map(); this.views = new Map(); this.itemsCache = null; this.wipKey = null;
     this.show = savedShow(); this.loaded = 0; this.placed = new Set();
   }
 
@@ -56,12 +63,15 @@ export class Graph {
     if (!this.where.dir) { this.error = "No folder"; return; }
     this.loading = true; this.error = null; cx.notify();
     try {
-      const info = await this.git.repo(this.worktree ?? this.where.dir, this.on);
+      const dir = this.worktree ?? this.where.dir;
+      const info = await this.git.repo(dir, this.on);
       if (run !== this.run) return;
       if (!info.ok) { this.error = info.reason; this.info = null; return; }
       this.info = info; this.leftCache = null;
       if (!this.worktree || !info.worktrees.some((w) => w.path === this.worktree)) this.worktree = info.worktrees.find((w) => info.root === w.path)?.path ?? info.root;
-      this.signature = signatureOf(info);
+      // Not awaited: the first paint does not wait for it, and the poll skips its check until it is there.
+      this.signature = null;
+      this.git.probe(dir, this.on).then((signature) => { if (run === this.run) this.signature = signature; }).catch(() => null);
       this.reset();
       cx.notify();
       this.git.aheadBehind(info.root, info.base, this.on).then((ab) => { if (run === this.run) { this.ab = ab; this.leftCache = null; cx.notify(); } }).catch(() => null);
@@ -86,8 +96,8 @@ export class Graph {
   /** The timer's check: reload when a ref, a stash or a checkout moved, and refresh the uncommitted files of the shown copy. */
   async poll(cx) {
     if (this.loading || !this.info) return;
-    const info = await this.git.repo(this.root, this.on);
-    if (info.ok && signatureOf(info) !== this.signature) { this.load(cx); return; }
+    const signature = await this.git.probe(this.root, this.on);
+    if (signature !== null && this.signature !== null && signature !== this.signature) { this.load(cx); return; }
     await this.loadWip(cx);
   }
 
@@ -154,6 +164,9 @@ export class Graph {
     const path = this.root, run = this.run;
     const snap = await this.git.read(path, this.on, { files: true }).catch(() => null);
     if (run !== this.run || path !== this.root) return;
+    const key = snap?.ok ? JSON.stringify([path, snap.sha, snap.ahead, snap.behind, snap.uncommittedTotal, snap.uncommitted]) : null;
+    if (key !== null && key === this.wipKey) return;
+    this.wipKey = key;
     this.wipSnap = snap?.ok && snap.uncommittedTotal > 0 ? snap : null;
     if (snap?.ok) this.wt.set(path, { changed: snap.uncommittedTotal, ahead: snap.ahead, behind: snap.behind });
     this.leftCache = null;
@@ -169,7 +182,7 @@ export class Graph {
   pickWorktree(path, cx) {
     this.picking = false;
     if (path !== this.worktree) {
-      this.worktree = path; this.wipSnap = null; this.leftCache = null;
+      this.worktree = path; this.wipSnap = null; this.wipKey = null; this.leftCache = null;
       if (this.selected === "wip") { this.selected = null; this.detail = null; this.file = null; this.view = null; }
       this.loadWip(cx);
     }
@@ -215,14 +228,58 @@ export class Graph {
   }
 
   async selectCommit(sha, cx) {
-    this.selected = sha; this.detail = null; this.detailError = null; this.file = null; this.view = null;
+    this.selected = sha; this.detail = this.details.get(sha) ?? null; this.detailError = null; this.file = null; this.view = null;
     cx.notify();
-    const run = this.run;
+    if (this.detail) { this.prefetch(this.detail, cx); return; }
     try {
-      const detail = await this.git.commit(this.info.root, sha, this.on);
-      if (this.selected === sha && run === this.run) this.detail = detail;
-    } catch (e) { if (this.selected === sha) this.detailError = String(e); }
-    cx.notify();
+      const detail = await this.git.commit(this.info.root, sha, this.on, this.commits[this.index.get(sha)]?.parents);
+      keep(this.details, sha, detail, KEPT_DETAILS);
+      if (this.selected !== sha) return;
+      this.detail = detail;
+      cx.notify();
+      // The line counts of a big commit come last; draw them when they land.
+      detail.stats.then(() => { if (this.detail === detail) cx.notify(); });
+      this.prefetch(detail, cx);
+    } catch (e) { if (this.selected === sha) { this.detailError = String(e); cx.notify(); } }
+  }
+
+  /** The changed files as the list shows them: one row per file, or a folder row ahead of each new directory. Rebuilt only when the commit or the layout changes. */
+  fileItems() {
+    const detail = this.detail, mode = this.fileMode;
+    if (!detail) return [];
+    if (this.itemsCache?.detail !== detail || this.itemsCache.mode !== mode) {
+      const items = mode === "tree" ? fileTree(detail.files) : detail.files.map((file) => ({ type: "file", file, name: file.path, depth: 0 }));
+      this.itemsCache = { detail, mode, items };
+    }
+    return this.itemsCache.items;
+  }
+
+  /** Reads the diffs of the first files in the list, one after the other, while the person is still looking at the commit. */
+  async prefetch(detail, cx) {
+    const files = this.fileItems().filter((item) => item.type === "file").slice(0, PREFETCHED_FILES);
+    for (const { file } of files) {
+      if (this.selected !== detail.sha) return;
+      await this.viewFor(detail, file, "diff").catch(() => null);
+    }
+  }
+
+  /** One file's rows for the diff pane, from the cache, from a read already under way, or from a new one. */
+  viewFor(detail, file, mode) {
+    const key = `${detail.sha}\0${file.path}\0${mode}`;
+    let entry = this.views.get(key);
+    if (!entry) {
+      entry = { view: null };
+      entry.promise = this.git.fileDiff(detail, file, this.on, this.info.root, { full: mode === "file" })
+        .then(({ lines, cut }) => (entry.view = { rows: markWords(diffRows(lines)), cut }))
+        .catch((e) => { this.views.delete(key); throw e; });
+      keep(this.views, key, entry, KEPT_VIEWS);
+    }
+    return entry.promise;
+  }
+
+  /** The view for a file when it has been read already. */
+  cachedView(detail, file, mode) {
+    return this.views.get(`${detail.sha}\0${file.path}\0${mode}`)?.view ?? null;
   }
 
   /** Scrolls the graph to a commit, loading older pages when it is not there yet. */
@@ -247,18 +304,20 @@ export class Graph {
   async openFile(path, cx) {
     const file = this.detail?.files.find((f) => f.path === path);
     if (!file) return;
-    this.file = file; this.mode = "diff"; this.hunkAt = -1; this.view = null;
+    this.file = file; this.mode = "diff"; this.hunkAt = -1; this.view = this.cachedView(this.detail, file, "diff");
     cx.notify();
-    await this.loadView(cx);
+    if (!this.view) await this.loadView(cx);
   }
 
   async loadView(cx) {
     const { file, detail, mode } = this;
     try {
-      const { lines, cut } = detail.wip
-        ? await this.git.diff(this.wipSnap, file, "uncommitted", this.on)
-        : await this.git.fileDiff(detail, file, this.on, this.info.root, { full: mode === "file" });
-      if (this.file === file && this.mode === mode) this.view = { rows: markWords(diffRows(lines)), cut };
+      let view;
+      if (detail.wip) {
+        const { lines, cut } = await this.git.diff(this.wipSnap, file, "uncommitted", this.on);
+        view = { rows: markWords(diffRows(lines)), cut };
+      } else view = await this.viewFor(detail, file, mode);
+      if (this.file === file && this.mode === mode) this.view = view;
     } catch { if (this.file === file) this.view = { rows: [{ kind: "", text: "Cannot preview this diff (too large or unreadable)" }] }; }
     this.hunkAt = -1;
     cx.notify();
@@ -266,9 +325,9 @@ export class Graph {
 
   setMode(mode, cx) {
     if (this.mode === mode || !this.file) return;
-    this.mode = mode; this.view = null;
+    this.mode = mode; this.view = this.detail.wip ? null : this.cachedView(this.detail, this.file, mode);
     cx.notify();
-    this.loadView(cx);
+    if (!this.view) this.loadView(cx);
   }
 
   closeFile(cx) { this.file = null; this.view = null; cx.notify(); }
@@ -404,12 +463,12 @@ export class Graph {
   }
 }
 
-// One short string that changes when a ref, a stash or the checkout moves.
-function signatureOf(info) {
-  let h = 0;
-  const mix = (s) => { for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0; };
-  for (const r of info.heads) mix(r.name + r.sha);
-  for (const r of info.remotes) mix(r.name + r.sha);
-  mix(`${info.tags.length}|${info.stashes.map((s) => s.sha).join()}|${info.worktrees.map((w) => w.path + w.sha).join()}|${info.head}`);
-  return h;
+/** Stores `value` under `key` and drops the oldest entries beyond `limit`. */
+function keep(map, key, value, limit) {
+  map.delete(key);
+  map.set(key, value);
+  for (const old of map.keys()) {
+    if (map.size <= limit) break;
+    map.delete(old);
+  }
 }

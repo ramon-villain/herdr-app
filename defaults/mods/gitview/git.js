@@ -305,22 +305,35 @@ export function createReader({ exec, readTextFile }) {
     return shas;
   }
 
-  /** A commit's message, author and changed files (against its first parent, or the empty tree for a root commit). */
-  async function commit(root, sha, on) {
-    const meta = await git(root, on, ["log", "-1", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%B", sha]);
-    if (meta.code !== 0) throw new Error(meta.stderr);
-    const [hash, parents, author, email, time, ...message] = meta.stdout.split("\x1f");
-    const parent = parents ? parents.split(" ") : [], from = parent[0] ?? EMPTY_TREE;
-    const [names, numstat] = await Promise.all([
-      git(root, on, ["diff", "--name-status", "-z", "--no-renames", from, sha]),
-      git(root, on, ["diff", "--numstat", "-z", "--no-renames", from, sha], 30000),
-    ]);
-    const stats = numstat.code === 0 ? parseStats([numstat]) : {};
-    const listed = names.code === 0 ? parseNameStatus(names.stdout) : { files: [], total: 0 };
-    return {
-      sha: hash, parents: parent, from, author, email, time: Number(time) * 1000, message: message.join("\x1f").trim(),
-      files: listed.files.map((f) => ({ ...f, add: 0, del: 0, ...stats[f.path] })), total: listed.total,
+  /**
+   * A commit's message, author and changed files (against its first parent, or the empty tree for a root commit).
+   * `parents` are the commit's parents when the caller already has them: the message and both file lists then start
+   * together instead of the lists waiting for the message. The result is ready once the file list is, with every
+   * file's add and del at 0; `stats` resolves after the line counts, which the slow numstat computes, are filled in.
+   */
+  async function commit(root, sha, on, parents) {
+    const meta = git(root, on, ["log", "-1", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%B", sha]);
+    const listFiles = (from) => {
+      const names = git(root, on, ["diff", "--name-status", "-z", "--no-renames", from, sha]);
+      names.catch(() => null);
+      // The counts are a bonus: a failed numstat leaves the files at 0.
+      return [names, git(root, on, ["diff", "--numstat", "-z", "--no-renames", from, sha], 30000).catch(() => ({ code: -1 }))];
     };
+    let lists = parents ? listFiles(parents[0] ?? EMPTY_TREE) : null;
+    const head = await meta;
+    if (head.code !== 0) throw new Error(head.stderr);
+    const [hash, parentList, author, email, time, ...message] = head.stdout.split("\x1f");
+    const parent = parentList ? parentList.split(" ") : [], from = parent[0] ?? EMPTY_TREE;
+    lists ??= listFiles(from);
+    const names = await lists[0];
+    const listed = names.code === 0 ? parseNameStatus(names.stdout) : { files: [], total: 0 };
+    const files = listed.files.map((f) => ({ ...f, add: 0, del: 0 }));
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    const stats = lists[1].then((numstat) => {
+      if (numstat.code !== 0) return;
+      for (const [path, stat] of Object.entries(parseStats([numstat]))) Object.assign(byPath.get(path) ?? {}, stat);
+    });
+    return { sha: hash, parents: parent, from, author, email, time: Number(time) * 1000, message: message.join("\x1f").trim(), files, total: listed.total, stats };
   }
 
   /** One file's change in a commit as display lines. `full` keeps the whole file, not just the hunks. */
@@ -333,5 +346,20 @@ export function createReader({ exec, readTextFile }) {
     return { lines: lines.slice(0, limit).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line), cut: lines.length > limit };
   }
 
-  return { read, diff, repo, aheadBehind, logPage, commit, fileDiff, search };
+  /**
+   * Everything the poll compares to see whether refs, stashes or checkouts moved, as one string that is equal while
+   * nothing did. It skips the tags' names and what repo() peels, so a poll is a fraction of a repo() read and parses nothing.
+   */
+  async function probe(root, on) {
+    const [refs, tags, stashes, worktrees, head] = await Promise.all([
+      git(root, on, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/remotes"], 30000),
+      git(root, on, ["for-each-ref", "--format=.", "refs/tags"], 30000),
+      git(root, on, ["stash", "list", "--format=%H"]),
+      git(root, on, ["worktree", "list", "--porcelain"]),
+      git(root, on, ["rev-parse", "HEAD"]),
+    ]);
+    return refs.code === 0 && tags.code === 0 ? [refs, tags, stashes, worktrees, head].map((r) => r.stdout).join("\0") : null;
+  }
+
+  return { read, diff, repo, probe, aheadBehind, logPage, commit, fileDiff, search };
 }
