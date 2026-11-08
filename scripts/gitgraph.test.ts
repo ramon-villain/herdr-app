@@ -795,18 +795,14 @@ test("the repository dropdown lists overseer first, switches the view to that re
   await g.load(cx);
   await settle();
   expect(g.repos.map((r: any) => r.path)).toEqual(["/projects/overseer", "/projects/firstmate", "/projects/zeta"]);
-  expect(g.info.root).toBe("/own");
-  g.pickRepo("/projects/overseer", cx);
+  g.pickRepo("/projects/firstmate", cx);
   await settle();
-  expect(g.info.root).toBe("/projects/overseer");
-  expect(g.worktree).toBe("/projects/overseer");
+  expect(g.info.root).toBe("/projects/firstmate");
+  expect(g.worktree).toBe("/projects/firstmate");
 
   const again = new Graph(g.git, () => ({ dir: "/own", on: null, space: "sp1" }), { scroll_to_item() {} }, "/projects");
   await again.load(cx);
-  expect(again.info.root).toBe("/projects/overseer");
-  const other = new Graph(g.git, () => ({ dir: "/elsewhere", on: null, space: "sp2" }), { scroll_to_item() {} }, "/projects");
-  await other.load(cx);
-  expect(other.info.root).toBe("/elsewhere");
+  expect(again.info.root).toBe("/projects/firstmate");
 
   g.pickRepo(null, cx);
   await settle();
@@ -814,6 +810,33 @@ test("the repository dropdown lists overseer first, switches the view to that re
   const reset = new Graph(g.git, () => ({ dir: "/own", on: null, space: "sp1" }), { scroll_to_item() {} }, "/projects");
   await reset.load(cx);
   expect(reset.info.root).toBe("/own");
+});
+
+test("a space with no stored pick opens on the overseer clone and still lists its own repo", async () => {
+  const { g } = repoGraph();
+  await g.load(cx);
+  await settle();
+  expect(g.info.root).toBe("/projects/overseer");
+  expect(g.repo).toBe("/projects/overseer");
+  expect(g.ownRoot).toBe("/own");
+});
+
+test("a stored pick wins over the overseer default, and so does the space's own repo picked on purpose", async () => {
+  const { g, store } = repoGraph();
+  store.set("gitview.graph.repo", JSON.stringify({ sp1: "/projects/zeta", sp2: "" }));
+  await g.load(cx);
+  expect(g.info.root).toBe("/projects/zeta");
+  const own = new Graph(g.git, () => ({ dir: "/own", on: null, space: "sp2" }), { scroll_to_item() {} }, "/projects");
+  await own.load(cx);
+  expect(own.info.root).toBe("/own");
+});
+
+test("without an overseer clone the space keeps its own repo", async () => {
+  const { g, git } = repoGraph();
+  git.clones = async () => ["firstmate", "zeta"];
+  await g.load(cx);
+  expect(g.info.root).toBe("/own");
+  expect(g.repo).toBeNull();
 });
 
 test("a space on another machine offers no local clones", async () => {
