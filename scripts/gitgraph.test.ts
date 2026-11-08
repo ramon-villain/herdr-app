@@ -299,6 +299,16 @@ test("a file diff gives hunks, and the full view keeps the whole file", async ()
   expect(full.lines.length).toBeGreaterThanOrEqual(hunk.lines.length);
 });
 
+test("one batched read gives each file the same lines as reading it alone", async () => {
+  const { work } = await fixture();
+  const [tip] = await reader.logPage(work, 0, null, 1);
+  const detail = await reader.commit(work, tip.sha, null);
+  const alone = await reader.fileDiff(detail, detail.files[0], null, work);
+  const batch = await reader.diffBatch(work, null, [detail.from, detail.sha], [detail.files[0], { path: "absent.ts" }]);
+  expect([...batch.keys()]).toEqual([detail.files[0].path]);
+  expect(batch.get(detail.files[0].path)).toEqual(alone);
+});
+
 test("ahead and behind come per local branch", async () => {
   const { work } = await fixture();
   const ab = await reader.aheadBehind(work, "master", null);
@@ -498,7 +508,7 @@ test("changed words are found only for the rows that are read, and equal what th
 });
 
 function cachedGraph(overrides: Record<string, any> = {}) {
-  const calls = { commit: 0, fileDiff: [] as string[] };
+  const calls = { commit: 0, fileDiff: [] as string[], batch: [] as string[][] };
   const git = {
     commit: async (_root: string, sha: string) => {
       calls.commit++;
@@ -506,6 +516,10 @@ function cachedGraph(overrides: Record<string, any> = {}) {
       return { sha, parents: ["p"], from: "p", files, total: 10, stats: Promise.resolve() };
     },
     fileDiff: async (_d: any, file: any) => { calls.fileDiff.push(file.path); return { lines: ["@@ -1 +1 @@", "-a", "+b"], cut: false }; },
+    diffBatch: async (_root: string, _on: any, _range: string[], files: any[]) => {
+      calls.batch.push(files.map((f) => f.path));
+      return new Map(files.map((f) => [f.path, { lines: ["@@ -1 +1 @@", "-a", "+b"], cut: false }]));
+    },
     ...overrides,
   };
   const g = new Graph(git, () => ({ dir: "/r", on: null }), { scroll_to_item() {} });
@@ -515,16 +529,53 @@ function cachedGraph(overrides: Record<string, any> = {}) {
 }
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-test("selecting a commit reads the first files' diffs ahead, and opening one then draws at once", async () => {
+test("selecting a commit reads the diffs of its files in one run, and opening one then draws at once", async () => {
   const { g, calls } = cachedGraph();
   await g.select("s1", cx);
   await settle();
-  expect(calls.fileDiff).toEqual(["a", "b", "c", "d", "e", "f", "g", "h"].map((n) => `${n}.ts`));
+  expect(calls.batch).toEqual([["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].map((n) => `${n}.ts`)]);
   const opened = g.openFile("b.ts", cx);
   // the rows are there before the open call has yielded
   expect(g.view?.rows.map((r: any) => r.kind)).toEqual(["@", "-", "+"]);
   await opened;
-  expect(calls.fileDiff).toHaveLength(8);
+  // only File View's read for the file just opened
+  expect(calls.fileDiff).toEqual(["b.ts"]);
+});
+
+test("a file the batch left out is read on its own, and a failed batch falls back to one read per file", async () => {
+  const { g, calls } = cachedGraph({ diffBatch: async (_r: string, _o: any, _g: string[], files: any[]) => new Map(files.slice(1).map((f) => [f.path, { lines: ["@@ -1 +1 @@", "+a"], cut: false }])) });
+  await g.select("s1", cx);
+  await settle();
+  expect(calls.fileDiff).toEqual(["a.ts"]);
+  const failing = cachedGraph({ diffBatch: async () => { throw new Error("x"); } });
+  await failing.g.select("s1", cx);
+  await settle();
+  expect(failing.calls.fileDiff).toHaveLength(10);
+});
+
+test("the uncommitted files' diffs are read in one run, File View reads the whole file, and a changed list starts over", async () => {
+  const { g, calls } = cachedGraph();
+  const files = [{ path: "m.ts", status: "M" }, { path: "n.ts", status: "M" }, { path: "new.ts", status: "A", fresh: true }];
+  const read: any[] = [];
+  g.git.diff = async (_s: any, file: any, _sec: string, _on: any, o: any) => { read.push([file.path, o?.full]); return { lines: ["@@ -1 +1 @@", "+a"], cut: false }; };
+  g.git.read = async () => ({ ok: true, root: "/r", sha: "h", ahead: 0, behind: 0, uncommittedTotal: 3, uncommitted: files });
+  g.worktree = "/r";
+  await g.loadWip(cx);
+  await settle();
+  expect(calls.batch).toContainEqual(["m.ts", "n.ts"]);
+  await g.select("wip", cx);
+  await g.openFile("m.ts", cx);
+  expect(g.view.rows).toHaveLength(3);
+  expect(read).toEqual([["m.ts", true]]);
+  g.setMode("file", cx);
+  await settle();
+  expect(read).toHaveLength(1);
+  expect(g.view).not.toBeNull();
+  const before = calls.batch.length;
+  g.git.read = async () => ({ ok: true, root: "/r", sha: "h", ahead: 0, behind: 0, uncommittedTotal: 3, uncommitted: [{ ...files[0], add: 5 }, files[1], files[2]] });
+  await g.loadWip(cx);
+  await settle();
+  expect(calls.batch.length).toBeGreaterThan(before);
 });
 
 test("a commit selected again is not read again, and an open during a read joins it", async () => {
@@ -592,12 +643,32 @@ test("an unchanged uncommitted state does not redraw", async () => {
   const g: any = new Graph({ read: async () => ({ ...snap }) }, () => ({ dir: "/r", on: null }), {});
   g.info = { root: "/r" }; g.worktree = "/r";
   const counting = { notify() { notified++; } };
+  g.git.diffBatch = async () => new Map();
   await g.loadWip(counting);
   await g.loadWip(counting);
   expect(notified).toBe(1);
   snap.uncommittedTotal = 2;
   await g.loadWip(counting);
   expect(notified).toBe(2);
+});
+
+test("the first look at a folder draws the tracked changes while the untracked scan is still running", async () => {
+  let release: () => void = () => {};
+  const slow = new Promise<void>((r) => { release = r; });
+  const tracked = { path: "a", status: "M", add: 1, del: 0 }, fresh = { path: "b", status: "A", fresh: true };
+  const read = async (_p: string, _on: any, o: any) => {
+    if (o.untracked === false) return { ok: true, root: "/r", sha: "x", ahead: 0, behind: 0, uncommittedTotal: 1, uncommitted: [tracked] };
+    await slow;
+    return { ok: true, root: "/r", sha: "x", ahead: 0, behind: 0, uncommittedTotal: 2, uncommitted: [tracked, fresh] };
+  };
+  const g: any = new Graph({ read, diffBatch: async () => new Map() }, () => ({ dir: "/r", on: null }), {});
+  g.info = { root: "/r" }; g.worktree = "/r";
+  const loading = g.loadWip(cx);
+  await settle();
+  expect(g.wipSnap.uncommitted).toEqual([tracked]);
+  release();
+  await loading;
+  expect(g.wipSnap.uncommitted).toEqual([tracked, fresh]);
 });
 
 test("the probe is equal while nothing moved and differs after a commit, a branch, a tag or a stash", async () => {

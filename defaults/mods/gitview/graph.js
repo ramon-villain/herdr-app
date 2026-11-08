@@ -12,9 +12,9 @@ const WORKTREE_READS = 3;
 
 // A commit never changes, so what was read for it stays right until the cache drops it.
 const KEPT_DETAILS = 40;
-const KEPT_VIEWS = 16;
-// Files of a selected commit whose diff is read before anyone asks, so the first click on one draws at once.
-const PREFETCHED_FILES = 8;
+const KEPT_VIEWS = 48;
+// Files of a selected commit, or of the uncommitted row, whose diffs are read in one git run before anyone asks, so a click on one draws at once.
+const PREFETCHED_FILES = 30;
 
 // The left tree's big sections start closed: thousands of remote branches and tags are for searching, not scrolling.
 const OPEN = { local: true, remote: false, worktrees: true, stashes: true, tags: false };
@@ -42,7 +42,7 @@ export class Graph {
     this.query = ""; this.matches = null; this.onlyMatches = false; this.searching = false; this.hitAt = -1; this.hitCache = null; this.searchRun = 0;
     this.fileMode = "path"; this.wantMore = false; this.signature = null; this.leftCache = null;
     this.run = 0; this.picking = false;
-    this.details = new Map(); this.views = new Map(); this.itemsCache = null; this.wipKey = null;
+    this.details = new Map(); this.views = new Map(); this.itemsCache = null; this.wipKey = null; this.wipGen = 0;
     this.show = savedShow(); this.loaded = 0; this.placed = new Set();
   }
 
@@ -162,13 +162,26 @@ export class Graph {
 
   async loadWip(cx) {
     const path = this.root, run = this.run;
-    const snap = await this.git.read(path, this.on, { files: true }).catch(() => null);
+    // Scanning for untracked files is most of git status, so the first look at a folder lists the tracked changes alone and the full list follows.
+    let finished = false;
+    const full = this.git.read(path, this.on, { files: true }).catch(() => null).finally(() => { finished = true; });
+    if (!this.wipSnap && this.wipKey === null) {
+      const quick = await this.git.read(path, this.on, { files: true, untracked: false }).catch(() => null);
+      if (run !== this.run || path !== this.root) return;
+      if (quick?.ok && quick.uncommittedTotal > 0 && this.wipKey === null && !finished) this.showWip(quick, "quick", cx);
+    }
+    const snap = await full;
     if (run !== this.run || path !== this.root) return;
     const key = snap?.ok ? JSON.stringify([path, snap.sha, snap.ahead, snap.behind, snap.uncommittedTotal, snap.uncommitted]) : null;
     if (key !== null && key === this.wipKey) return;
-    this.wipKey = key;
-    this.wipSnap = snap?.ok && snap.uncommittedTotal > 0 ? snap : null;
-    if (snap?.ok) this.wt.set(path, { changed: snap.uncommittedTotal, ahead: snap.ahead, behind: snap.behind });
+    this.showWip(snap?.ok ? snap : null, key, cx);
+  }
+
+  showWip(snap, key, cx) {
+    this.wipKey = key; this.wipGen++;
+    this.wipSnap = snap && snap.uncommittedTotal > 0 ? snap : null;
+    if (this.wipSnap) this.prefetchWip(this.wipSnap);
+    if (snap) this.wt.set(this.root, { changed: snap.uncommittedTotal, ahead: snap.ahead, behind: snap.behind });
     this.leftCache = null;
     if (this.selected === "wip") this.detail = this.wipDetail();
     cx.notify();
@@ -182,7 +195,7 @@ export class Graph {
   pickWorktree(path, cx) {
     this.picking = false;
     if (path !== this.worktree) {
-      this.worktree = path; this.wipSnap = null; this.wipKey = null; this.leftCache = null;
+      this.worktree = path; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
       if (this.selected === "wip") { this.selected = null; this.detail = null; this.file = null; this.view = null; }
       this.loadWip(cx);
     }
@@ -254,22 +267,40 @@ export class Graph {
     return this.itemsCache.items;
   }
 
-  /** Reads the diffs of the first files in the list, one after the other, while the person is still looking at the commit. */
-  async prefetch(detail, cx) {
-    const files = this.fileItems().filter((item) => item.type === "file").slice(0, PREFETCHED_FILES);
-    for (const { file } of files) {
-      if (this.selected !== detail.sha) return;
-      await this.viewFor(detail, file, "diff").catch(() => null);
-    }
+  /** Reads the diffs of the first files in the list in one git run, while the person is still looking at the commit. */
+  prefetch(detail, cx) {
+    const files = this.fileItems().filter((item) => item.type === "file").map((item) => item.file).slice(0, PREFETCHED_FILES);
+    this.prefetchViews(detail, files, (batch) => this.git.diffBatch(this.info.root, this.on, [detail.from, detail.sha], batch));
+  }
+
+  /** The uncommitted files that exist in HEAD; the new ones are read from disk, which is already fast. */
+  prefetchWip(snap) {
+    const files = snap.uncommitted.filter((f) => !f.fresh).slice(0, PREFETCHED_FILES);
+    this.prefetchViews(this.wipDetail(), files, (batch) => this.git.diffBatch(snap.root, this.on, ["HEAD"], batch));
+  }
+
+  prefetchViews(detail, files, read) {
+    const missing = files.filter((file) => !this.views.has(this.viewKey(detail, file, "diff")));
+    if (!missing.length || !read) return;
+    const batch = (async () => read(missing))().catch(() => null);
+    for (const file of missing) this.viewFor(detail, file, "diff", async () => (await batch)?.get(file.path) ?? this.readDiff(detail, file, "diff")).catch(() => null);
+  }
+
+  viewKey(detail, file, mode) {
+    return detail.wip ? `wip${this.wipGen}\0${file.path}\0${mode}` : `${detail.sha}\0${file.path}\0${mode}`;
+  }
+
+  readDiff(detail, file, mode) {
+    return detail.wip ? this.git.diff(this.wipSnap, file, "uncommitted", this.on, { full: mode === "file" }) : this.git.fileDiff(detail, file, this.on, this.info.root, { full: mode === "file" });
   }
 
   /** One file's rows for the diff pane, from the cache, from a read already under way, or from a new one. */
-  viewFor(detail, file, mode) {
-    const key = `${detail.sha}\0${file.path}\0${mode}`;
+  viewFor(detail, file, mode, read = () => this.readDiff(detail, file, mode)) {
+    const key = this.viewKey(detail, file, mode);
     let entry = this.views.get(key);
     if (!entry) {
       entry = { view: null };
-      entry.promise = this.git.fileDiff(detail, file, this.on, this.info.root, { full: mode === "file" })
+      entry.promise = read()
         .then(({ lines, cut }) => (entry.view = { rows: markWords(diffRows(lines)), cut }))
         .catch((e) => { this.views.delete(key); throw e; });
       keep(this.views, key, entry, KEPT_VIEWS);
@@ -279,7 +310,7 @@ export class Graph {
 
   /** The view for a file when it has been read already. */
   cachedView(detail, file, mode) {
-    return this.views.get(`${detail.sha}\0${file.path}\0${mode}`)?.view ?? null;
+    return this.views.get(this.viewKey(detail, file, mode))?.view ?? null;
   }
 
   /** Scrolls the graph to a commit, loading older pages when it is not there yet. */
@@ -307,16 +338,14 @@ export class Graph {
     this.file = file; this.mode = "diff"; this.hunkAt = -1; this.view = this.cachedView(this.detail, file, "diff");
     cx.notify();
     if (!this.view) await this.loadView(cx);
+    // File View is one click away, so its read starts now.
+    if (this.file === file) this.viewFor(this.detail, file, "file").catch(() => null);
   }
 
   async loadView(cx) {
     const { file, detail, mode } = this;
     try {
-      let view;
-      if (detail.wip) {
-        const { lines, cut } = await this.git.diff(this.wipSnap, file, "uncommitted", this.on);
-        view = { rows: markWords(diffRows(lines)), cut };
-      } else view = await this.viewFor(detail, file, mode);
+      const view = await this.viewFor(detail, file, mode);
       if (this.file === file && this.mode === mode) this.view = view;
     } catch { if (this.file === file) this.view = { rows: [{ kind: "", text: "Cannot preview this diff (too large or unreadable)" }] }; }
     this.hunkAt = -1;
@@ -325,7 +354,7 @@ export class Graph {
 
   setMode(mode, cx) {
     if (this.mode === mode || !this.file) return;
-    this.mode = mode; this.view = this.detail.wip ? null : this.cachedView(this.detail, this.file, mode);
+    this.mode = mode; this.view = this.cachedView(this.detail, this.file, mode);
     cx.notify();
     if (!this.view) this.loadView(cx);
   }
