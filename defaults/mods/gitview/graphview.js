@@ -78,7 +78,7 @@ function commitRow(graph, i, t, gw, headSha) {
 }
 
 function searchBar(graph, view, t) {
-  const { shown, all } = graph.visibleRefs(), changed = graph.hidden.size > 0 || graph.soloed.size > 0, hits = graph.hits();
+  const { shown, all } = graph.visibleRefs(), soloing = graph.soloed.size > 0, changed = graph.hidden.size > 0 || soloing, hits = graph.hits();
   return h_flex().h(36).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.muted)
     .child(Input.new(view.search).w(220).h(24).px(8).rounded(5).border_1().border_color(t.border).bg(t.background).text_size(12).text_color(t.foreground))
     .when(Boolean(graph.query), (e) => e.child(div().flex_none().child(graph.searching ? "Searching…" : `${hits ? hits.matches.size : 0} found, ${hits ? hits.list.length : 0} loaded`))
@@ -86,8 +86,9 @@ function searchBar(graph, view, t) {
       .child(pill(t, "graph-hit-next", "↓", false, (_e, cx) => graph.jump(1, cx)))
       .child(pill(t, "graph-only", "Only matches", graph.onlyMatches, (_e, cx) => graph.toggleOnly(cx))))
     .child(div().flex_1())
-    .child(div().flex_none().text_color(changed ? t.accent : t.dim).child(`Showing ${shown} of ${all} branches`))
-    .when(changed, (e) => e.child(pill(t, "graph-show-all", "Show all", false, (_e, cx) => graph.showAll(cx))));
+    .child(div().flex_none().text_color(changed ? t.accent : t.dim).child(soloing ? `Soloing ${shown}/${all}` : `Showing ${shown} of ${all} branches`))
+    .when(soloing, (e) => e.child(pill(t, "graph-stop-solo", "Stop Soloing", false, (_e, cx) => graph.stopSolo(cx))))
+    .when(changed && !soloing, (e) => e.child(pill(t, "graph-show-all", "Show all", false, (_e, cx) => graph.showAll(cx))));
 }
 
 function graphList(graph, view, t) {
