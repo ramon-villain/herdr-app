@@ -933,3 +933,53 @@ test("find follows the rows of the other view and goes away with the file", () =
   expect(g.find.open).toBe(false);
   expect(g.findHits()).toEqual([]);
 });
+
+// ---- the branch of the selected commit
+
+function branchGraph(heads: { name: string; sha: string }[]) {
+  const scrolled: number[] = [];
+  const g: any = new Graph({}, () => ({ dir: null, on: null }), { scroll_to_item() {} }, null, { scroll_to_item: (at: number) => scrolled.push(at) });
+  g.commits = [c("d", "c"), c("c", "b"), c("b", "a"), c("a"), c("x", "b")];
+  g.commits.forEach((commit: any, i: number) => g.index.set(commit.sha, i));
+  g.info = { heads, remotes: [], tags: [], stashes: [], worktrees: [], bySha: new Map() };
+  return { g, scrolled };
+}
+const markedNames = (g: any) => g.left().filter((i: any) => i.marked).map((i: any) => `${i.name}:${i.marked}`);
+
+test("the branch whose tip is the selected commit is marked, expanded and scrolled to", async () => {
+  const { g, scrolled } = branchGraph([{ name: "master", sha: "d" }, { name: "feat/deep/one", sha: "x" }]);
+  g.collapsed.add("feat"); g.collapsed.add("feat/deep");
+  expect(markedNames(g)).toEqual([]);
+  await g.select("x", cx);
+  expect(markedNames(g)).toEqual(["feat/deep/one:tip"]);
+  expect(g.left().some((i: any) => i.type === "folder" && i.path === "feat/deep")).toBe(true);
+  expect(g.left().findIndex((i: any) => i.marked)).toBe(scrolled[0]);
+});
+
+test("a commit that is no branch tip marks the branches that contain it", async () => {
+  const { g } = branchGraph([{ name: "master", sha: "d" }, { name: "side", sha: "x" }, { name: "old", sha: "a" }]);
+  await g.select("b", cx);
+  expect(markedNames(g)).toEqual(["master:contains", "side:contains"]);
+  await g.select("c", cx);
+  expect(markedNames(g)).toEqual(["master:contains"]);
+});
+
+test("the mark goes when nothing is selected", async () => {
+  const { g } = branchGraph([{ name: "master", sha: "d" }]);
+  await g.select("d", cx);
+  expect(markedNames(g)).toEqual(["master:tip"]);
+  g.selected = null;
+  expect(markedNames(g)).toEqual([]);
+});
+
+test("marking 575 branches over 5000 commits is one cheap pass", async () => {
+  const { g } = branchGraph(Array.from({ length: 575 }, (_, i) => ({ name: `b/${i}`, sha: `h${i}` })));
+  g.commits = Array.from({ length: 5000 }, (_, i) => c(`s${i}`, `s${i + 1}`));
+  g.commits.forEach((commit: any, i: number) => g.index.set(commit.sha, i));
+  g.info.heads[0].sha = "s0";
+  const start = performance.now();
+  await g.select("s4000", cx);
+  g.left();
+  expect(markedNames(g)).toEqual(["b/0:contains"]);
+  expect(performance.now() - start).toBeLessThan(100);
+});

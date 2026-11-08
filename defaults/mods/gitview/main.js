@@ -49,10 +49,11 @@ export default class GitView extends View {
   initGraph(cx) {
     this.graphScroll = VirtualListScrollHandle.new();
     this.diffScroll = VirtualListScrollHandle.new();
+    this.leftScroll = VirtualListScrollHandle.new();
     this.graph = new Graph(this.git, () => {
       const space = spaces().find((s) => s.active);
       return { dir: space ? place(space, panes()) : null, on: space?.machine ?? null, space: space?.id ?? null };
-    }, this.graphScroll, modProps()?.projects ?? PROJECTS);
+    }, this.graphScroll, modProps()?.projects ?? PROJECTS, this.leftScroll);
     this.input = InputState.new({ placeholder: "Filter branches, tags and stashes" });
     this.input.on("change", (_e, cx) => this.graph.setFilter(this.input.value(), cx));
     this.search = InputState.new({ placeholder: "Search message, author, sha or file" });
