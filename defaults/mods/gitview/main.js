@@ -2,7 +2,7 @@ import { View } from "gpui-kit";
 import { InputState, VirtualListScrollHandle } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, window, theme, run, props as modProps, openOverlay, closeOverlay, shared, setShared, notify } from "herdr";
 import { createReader, diffRows } from "./git.js";
-import { findKey } from "./model.js";
+import { findKey, fileKey } from "./model.js";
 import { renderPanel } from "./views.js";
 import { Graph } from "./graph.js";
 import { renderGraphTab } from "./graphview.js";
@@ -50,10 +50,11 @@ export default class GitView extends View {
     this.graphScroll = VirtualListScrollHandle.new();
     this.diffScroll = VirtualListScrollHandle.new();
     this.leftScroll = VirtualListScrollHandle.new();
+    this.filesScroll = VirtualListScrollHandle.new();
     this.graph = new Graph(this.git, () => {
       const space = spaces().find((s) => s.active);
       return { dir: space ? place(space, panes()) : null, on: space?.machine ?? null, space: space?.id ?? null };
-    }, this.graphScroll, modProps()?.projects ?? PROJECTS, this.leftScroll);
+    }, this.graphScroll, modProps()?.projects ?? PROJECTS, this.leftScroll, this.filesScroll);
     this.input = InputState.new({ placeholder: "Filter branches, tags and stashes" });
     this.input.on("change", (_e, cx) => this.graph.setFilter(this.input.value(), cx));
     this.search = InputState.new({ placeholder: "Search message, author, sha or file" });
@@ -162,6 +163,12 @@ export default class GitView extends View {
 
   /** cmd+f and its keys, only while something in the Git graph tab holds the keyboard: this handler sits on the tab's root, so no other pane sees them. */
   onKey(e, cx) {
+    const step = fileKey(e.key, e.modifiers);
+    // An input takes the arrows for its caret; only the tab's own handle means the list has the keyboard.
+    if (step && this.handle.is_focused() && this.graph.detail && !this.graph.find.open) {
+      if (this.graph.stepFile(step, cx)) { cx.stop_propagation(); cx.notify(); }
+      return;
+    }
     const action = findKey(e.key, e.modifiers, this.graph.find.open);
     if (!action || (action === "open" && !this.graph.file)) return;
     if (action === "open") {

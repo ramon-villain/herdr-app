@@ -273,7 +273,7 @@ function detailPane(graph, view, t, items) {
       .child(pill(t, "graph-tree", "Tree", graph.fileMode === "tree", (_e, cx) => { graph.fileMode = "tree"; cx.notify(); })))
     .child(div().flex_1().min_h(0).relative()
       .child(v_virtual_list("graph-files", items.length, ROW, (i) => items[i].file?.path ?? `dir:${items[i].path}`, (range) => items.slice(range.start, range.end).map((item) => fileRow(item, t, graph)))
-        .on_item_click((key, cx) => { if (!key.startsWith("dir:")) graph.openFile(key, cx); }).size_full())
+        .track_scroll(view.filesScroll).on_item_click((key, cx) => { if (!key.startsWith("dir:")) graph.openFile(key, cx); }).size_full())
       .child(Scrollbar.vertical("graph-files").absolute().inset_0()));
 }
 

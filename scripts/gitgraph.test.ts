@@ -9,7 +9,7 @@ import { Graph } from "../defaults/mods/gitview/graph.js";
 // @ts-ignore
 import { layoutLanes, COLORS } from "../defaults/mods/gitview/lanes.js";
 // @ts-ignore
-import { agoLabel, branchTree, fileTree, wordDiff, markWords, tokenize, lineSegments, hunkStarts, stepHunk, findMatches, stepMatch, markFinds, findKey } from "../defaults/mods/gitview/model.js";
+import { agoLabel, branchTree, fileTree, wordDiff, markWords, tokenize, lineSegments, hunkStarts, stepHunk, findMatches, stepMatch, markFinds, findKey, fileKey } from "../defaults/mods/gitview/model.js";
 
 const c = (sha: string, ...parents: string[]) => ({ sha, parents });
 const lay = (commits: any[]) => layoutLanes(commits).rows;
@@ -1024,4 +1024,37 @@ test("soloing several branches walks all of them, and Stop Soloing brings the re
   expect(seen.at(-1).solo).toEqual(["refs/heads/b"]);
   g.stopSolo(click); await new Promise((r) => setTimeout(r, 5));
   expect(seen.at(-1).solo).toEqual([]);
+});
+
+// ---- arrows in the commit panel
+
+const mods = { platform: false, control: false, alt: false, shift: false };
+
+test("only bare arrow up and down step the files", () => {
+  expect([fileKey("up", mods), fileKey("down", mods), fileKey("left", mods), fileKey("a", mods)]).toEqual([-1, 1, null, null]);
+  expect(fileKey("down", { ...mods, shift: true })).toBeNull();
+  expect(fileKey("up", { ...mods, platform: true })).toBeNull();
+});
+
+test("arrow down and up open the next and previous file in Path and Tree view and keep the row in view", () => {
+  const scrolled: number[] = [];
+  const g: any = new Graph({}, () => ({ dir: null, on: null }), {}, null, null, { scroll_to_item: (at: number) => scrolled.push(at) });
+  const files = ["a.ts", "src/b.ts", "src/c.ts"].map((path) => ({ path, status: "M", add: 1, del: 0 }));
+  g.detail = { sha: "s", files }; g.mode = "diff";
+  g.openFile = (path: string) => { g.file = files.find((f) => f.path === path); return Promise.resolve(); };
+  expect(g.stepFile(1, cx)).toBe(true);
+  expect(g.file.path).toBe("a.ts");
+  g.stepFile(1, cx); g.stepFile(1, cx);
+  expect(g.file.path).toBe("src/c.ts");
+  expect(g.stepFile(1, cx)).toBe(false);
+  g.stepFile(-1, cx);
+  expect(g.file.path).toBe("src/b.ts");
+  g.fileMode = "tree"; g.itemsCache = null;
+  g.file = files[0];
+  g.stepFile(1, cx);
+  expect(g.file.path).toBe("src/b.ts");
+  expect(scrolled.at(-1)).toBe(2);
+  g.stepFile(-1, cx); g.stepFile(-1, cx);
+  expect(g.file.path).toBe("a.ts");
+  expect(g.stepFile(-1, cx)).toBe(false);
 });

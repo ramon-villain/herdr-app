@@ -201,6 +201,12 @@ export function markFinds(segments, ranges) {
   return out;
 }
 
+/** -1 or 1 for a bare arrow up or down, which move the selected file in the commit panel, else null. */
+export function fileKey(key, mods) {
+  if (mods.platform || mods.control || mods.alt || mods.shift) return null;
+  return key === "up" ? -1 : key === "down" ? 1 : null;
+}
+
 /** What a key does to the find bar of the file pane, or null when it is not for the bar. `mods` is the event's modifiers. */
 export function findKey(key, mods, open) {
   const command = mods.platform || mods.control;
