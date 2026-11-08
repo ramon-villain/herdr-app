@@ -12,9 +12,11 @@ const WORKTREE_READS = 3;
 
 // A commit never changes, so what was read for it stays right until the cache drops it.
 const KEPT_DETAILS = 40;
-const KEPT_VIEWS = 48;
+const KEPT_VIEWS = 96;
 // Files of a selected commit, or of the uncommitted row, whose diffs are read in one git run before anyone asks, so a click on one draws at once.
 const PREFETCHED_FILES = 30;
+// In File View the whole files of this many files after the open one are read in one git run, so stepping down the list stays instant without a run per file of a large commit.
+const PREFETCHED_WHOLE_FILES = 6;
 
 // The left tree's big sections start closed: thousands of remote branches and tags are for searching, not scrolling.
 const OPEN = { local: true, remote: false, worktrees: true, stashes: true, tags: false };
@@ -333,11 +335,21 @@ export class Graph {
     this.prefetchViews(this.wipDetail(), files, (batch) => this.git.diffBatch(snap.root, this.on, ["HEAD"], batch));
   }
 
-  prefetchViews(detail, files, read) {
-    const missing = files.filter((file) => !this.views.has(this.viewKey(detail, file, "diff")));
+  /** In File View, reads the whole files of the few after the open one, the same way the diffs are read ahead. */
+  prefetchWhole() {
+    const { detail, file } = this;
+    if (this.mode !== "file" || !file || !detail) return;
+    const files = this.fileItems().filter((item) => item.type === "file").map((item) => item.file);
+    const ahead = files.slice(files.indexOf(file) + 1).filter((f) => !f.fresh).slice(0, PREFETCHED_WHOLE_FILES);
+    const [root, range] = detail.wip ? [this.wipSnap.root, ["HEAD"]] : [this.info.root, [detail.from, detail.sha]];
+    this.prefetchViews(detail, ahead, (batch) => this.git.diffBatch(root, this.on, range, batch, { full: true }), "file");
+  }
+
+  prefetchViews(detail, files, read, mode = "diff") {
+    const missing = files.filter((file) => !this.views.has(this.viewKey(detail, file, mode)));
     if (!missing.length || !read) return;
     const batch = (async () => read(missing))().catch(() => null);
-    for (const file of missing) this.viewFor(detail, file, "diff", async () => (await batch)?.get(file.path) ?? this.readDiff(detail, file, "diff")).catch(() => null);
+    for (const file of missing) this.viewFor(detail, file, mode, async () => (await batch)?.get(file.path) ?? this.readDiff(detail, file, mode)).catch(() => null);
   }
 
   viewKey(detail, file, mode) {
@@ -389,11 +401,12 @@ export class Graph {
   async openFile(path, cx) {
     const file = this.detail?.files.find((f) => f.path === path);
     if (!file) return;
-    this.file = file; this.mode = "diff"; this.hunkAt = -1; this.view = this.cachedView(this.detail, file, "diff");
+    const { mode } = this, other = mode === "diff" ? "file" : "diff";
+    this.file = file; this.hunkAt = -1; this.view = this.cachedView(this.detail, file, mode);
     cx.notify();
-    const warm = () => { if (this.file === file) this.viewFor(this.detail, file, "file").catch(() => null); };
+    // The other view is one click away, so its read starts now.
+    const warm = () => { if (this.file === file) { this.viewFor(this.detail, file, other).catch(() => null); this.prefetchWhole(); } };
     if (this.view) return warm();
-    // File View is one click away, so its read starts now.
     return this.later(cx, async (cx) => { await this.loadView(cx); warm(); });
   }
 
@@ -412,6 +425,7 @@ export class Graph {
     this.mode = mode; this.view = this.cachedView(this.detail, this.file, mode);
     cx.notify();
     if (!this.view) this.later(cx, (cx) => this.loadView(cx)).catch(() => null);
+    this.prefetchWhole();
   }
 
   closeFile(cx) { this.file = null; this.view = null; cx.notify(); }
