@@ -89,6 +89,15 @@ export function diffRows(lines) {
   });
 }
 
+/** The hunks of one file's `git diff` output as display lines, cut to what the pane keeps. */
+function diffBody(all, file, full) {
+  const first = all.findIndex((l) => l.startsWith("@@"));
+  if (first < 0) return { lines: [file.binary ? "Binary file changed" : "No text diff available"] };
+  while (all.length && all[all.length - 1] === "") all.pop();
+  const lines = all.slice(first), limit = full ? FULL_FILE_LINES : DIFF_LINES;
+  return { lines: lines.slice(0, limit).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line), cut: lines.length > limit };
+}
+
 const clip = (lines) => lines.slice(0, DIFF_LINES).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -193,14 +202,16 @@ export function refArgs({ hidden = [], solo = [], remotes = true, tags = true, e
 export function createReader({ exec, readTextFile }) {
   const git = (root, on, args, timeout = 15000) => exec("git", [...READ, ...args], { cwd: root, on, timeout });
 
-  async function read(folder, on, { files = true } = {}) {
+  async function read(folder, on, { files = true, untracked = true } = {}) {
     const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, on });
     if (top.code !== 0) return { ok: false, reason: "Not a git repository" };
     const root = top.stdout.trim();
-    const [status, refs, log] = await Promise.all([
-      git(root, on, ["status", "--porcelain=v2", "--branch", "-z", "--no-renames", "--untracked-files=all"]),
+    // The line counts do not depend on the status, and the status is the slow one, so they run beside it.
+    const [status, refs, log, numstat] = await Promise.all([
+      git(root, on, ["status", "--porcelain=v2", "--branch", "-z", "--no-renames", untracked ? "--untracked-files=all" : "--untracked-files=no"]),
       git(root, on, ["for-each-ref", "--format=%(refname)%09%(symref)", "refs/remotes/origin/HEAD", "refs/remotes/origin/master", "refs/remotes/origin/main"]),
       git(root, on, ["log", "-1", "--format=%H%x1f%s%x1f%ct"]),
+      files ? git(root, on, ["diff", "HEAD", "--numstat", "-z", "--no-renames"], 20000) : null,
     ]);
     if (status.code !== 0) return { ok: false, reason: status.stderr.trim() || "git status failed" };
     const { head, files: dirty, total: dirtyTotal } = parseStatus(status.stdout);
@@ -215,12 +226,11 @@ export function createReader({ exec, readTextFile }) {
       if (sibling.code === 0) remote = `origin/${branch}`;
     }
     const compare = remote ?? base;
-    const [counts, committed, numstat] = await Promise.all([
+    const [counts, committed] = await Promise.all([
       hasHead && base ? git(root, on, ["rev-list", "--left-right", "--count", `${base}...HEAD`]) : null,
       hasHead && compare ? git(root, on, ["diff", "--name-status", "-z", "--no-renames", `${compare}...HEAD`]) : null,
-      files && hasHead && dirtyTotal <= LISTED ? git(root, on, ["diff", "HEAD", "--numstat", "-z", "--no-renames"], 20000) : null,
     ]);
-    const stats = numstat ? parseStats([numstat]) : {};
+    const stats = numstat && hasHead && dirtyTotal <= LISTED ? parseStats([numstat]) : {};
     const [latestSha, subject, time] = hasHead ? log.stdout.trim().split("\x1f") : [];
     const [behind, ahead] = counts?.code === 0 ? counts.stdout.trim().split(/\s+/).map(Number) : [null, null];
     const unpushed = committed?.code === 0 ? parseNameStatus(committed.stdout) : { files: [], total: 0 };
@@ -240,7 +250,7 @@ export function createReader({ exec, readTextFile }) {
   }
 
   /** The diff of one listed file as display lines. `section`: "uncommitted" or "unpushed". */
-  async function diff(snapshot, file, section, on) {
+  async function diff(snapshot, file, section, on, { full = false } = {}) {
     const { root } = snapshot;
     if (section === "uncommitted" && (file.fresh || !snapshot.hasHead)) {
       const text = readTextFile ? await readTextFile(`${root}/${file.path}`, { on }).catch(() => null) : null;
@@ -250,10 +260,9 @@ export function createReader({ exec, readTextFile }) {
       return { add, lines: clip([`@@ -0,0 +1,${add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, DIFF_LINES).map((l) => `+${l}`)]) };
     }
     const range = section === "uncommitted" ? ["HEAD"] : [`${snapshot.remote ?? snapshot.base}...HEAD`];
-    const r = await git(root, on, ["diff", ...range, "--no-ext-diff", "--no-textconv", "--no-color", "--", file.path]);
+    const r = await git(root, on, ["diff", full ? "-U100000" : "-U3", ...range, "--no-ext-diff", "--no-textconv", "--no-color", "--", file.path]);
     if (r.code !== 0) throw new Error(r.stderr);
-    const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
-    return { lines: first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : clip(all.slice(first)) };
+    return diffBody(r.stdout.replace(/\n$/, "").split("\n"), file, full);
   }
 
   /** What the graph view starts from: the repo holding `folder`, its checkouts, refs and stashes. */
@@ -340,10 +349,30 @@ export function createReader({ exec, readTextFile }) {
   async function fileDiff(detail, file, on, root, { full = false } = {}) {
     const r = await git(root, on, ["diff", full ? "-U100000" : "-U3", "--no-ext-diff", "--no-textconv", "--no-color", detail.from, detail.sha, "--", file.path]);
     if (r.code !== 0) throw new Error(r.stderr);
-    const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
-    if (first < 0) return { lines: [file.binary ? "Binary file changed" : "No text diff available"] };
-    const lines = all.slice(first), limit = full ? FULL_FILE_LINES : DIFF_LINES;
-    return { lines: lines.slice(0, limit).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line), cut: lines.length > limit };
+    return diffBody(r.stdout.replace(/\n$/, "").split("\n"), file, full);
+  }
+
+  /**
+   * The diffs of several files from one git run, as a Map of path to what diff() or fileDiff() resolve with. `range` is the
+   * revisions to compare, with the working copy when it is just ["HEAD"]. A file git quotes in its header is left out of the Map.
+   */
+  async function diffBatch(root, on, range, files, { full = false } = {}) {
+    const r = await git(root, on, ["-c", "core.quotePath=false", "diff", full ? "-U100000" : "-U3", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", ...range, "--", ...files.map((f) => f.path)], 30000);
+    if (r.code !== 0) throw new Error(r.stderr);
+    const byPath = new Map(files.map((f) => [f.path, f])), out = new Map();
+    let path = null, block = [];
+    const flush = () => { if (path !== null && byPath.has(path)) out.set(path, diffBody(block, byPath.get(path), full)); };
+    for (const line of r.stdout.split("\n")) {
+      if (line.startsWith("diff --git ")) {
+        flush();
+        // "a/P b/P": both sides are the same path without renames, so the path is the middle of the line.
+        const rest = line.slice(11), size = (rest.length - 5) / 2;
+        path = Number.isInteger(size) && rest.startsWith("a/") ? rest.slice(2, 2 + size) : null;
+        block = [];
+      } else block.push(line);
+    }
+    flush();
+    return out;
   }
 
   /**
@@ -361,5 +390,5 @@ export function createReader({ exec, readTextFile }) {
     return refs.code === 0 && tags.code === 0 ? [refs, tags, stashes, worktrees, head].map((r) => r.stdout).join("\0") : null;
   }
 
-  return { read, diff, repo, probe, aheadBehind, logPage, commit, fileDiff, search };
+  return { read, diff, diffBatch, repo, probe, aheadBehind, logPage, commit, fileDiff, search };
 }
