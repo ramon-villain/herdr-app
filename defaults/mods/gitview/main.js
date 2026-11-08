@@ -64,6 +64,8 @@ export default class GitView extends View {
     this.lastRequest = shared(MENU_REQUEST)?.t;
     this.noteInput = InputState.new({ placeholder: "Message for firstmate (optional)" });
     this.noteInput.on("submit", (_e, cx) => this.sendPick(cx));
+    this.askInput = InputState.new({ placeholder: "Ask firstmate about this" });
+    this.askInput.on("submit", (_e, cx) => this.sendAsk(cx));
     this.findInput = InputState.new({ placeholder: "Find in file" });
     this.findInput.on("change", (_e, cx) => { this.graph.setFind(this.findInput.value(), this.diffScroll); cx.notify(); });
     // Enter may reach the field's submit, onKey, or both; onKey knows about shift, so submit waits a moment and steps only if onKey did not.
@@ -121,7 +123,8 @@ export default class GitView extends View {
 
   async act({ action, ref, web, base, root, on }, cx) {
     const graph = this.graph, actions = this.actions(cx);
-    if (action === "solo") graph.solo(ref.ref, cx);
+    if (action === "askFm") { graph.askAbout(ref); this.askInput.focus(); }
+    else if (action === "solo") graph.solo(ref.ref, cx);
     else if (action === "hide") graph.hide(ref.ref, cx);
     else if (action === "copyName") actions.copyText(ref.name, ref.type === "tag" ? "tag name" : "branch name");
     else if (action === "copySha") actions.copyText(ref.sha, "commit sha");
@@ -144,6 +147,22 @@ export default class GitView extends View {
         await this.actions(task).sendNote(`herdr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, body);
         this.graph.pick = null;
         this.noteInput.set_value("");
+      } catch (e) { notify({ title: "Could not send to firstmate", body: String(e.message ?? e), level: "error" }); }
+      this.sending = false;
+      task.notify();
+    });
+  }
+
+  sendAsk(cx) {
+    const body = this.sending ? null : this.graph.askNote(this.askInput.value());
+    if (!body) return;
+    this.sending = true;
+    cx.notify();
+    cx.spawn(async (task) => {
+      try {
+        await this.actions(task).sendNote(`herdr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, body);
+        this.graph.ask = null;
+        this.askInput.set_value("");
       } catch (e) { notify({ title: "Could not send to firstmate", body: String(e.message ?? e), level: "error" }); }
       this.sending = false;
       task.notify();

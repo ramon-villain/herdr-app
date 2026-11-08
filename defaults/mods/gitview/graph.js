@@ -3,7 +3,7 @@ import { layoutLanes } from "./lanes.js";
 import { agoLabel, branchTree, fileTree, hunkStarts, markWords, stepHunk, findMatches, stepMatch } from "./model.js";
 import { diffRows } from "./git.js";
 import { branchOf, webUrl } from "./refmenu.js";
-import { noteBody } from "./note.js";
+import { noteBody, askBody } from "./note.js";
 
 // Every page walks the whole history to sort it, whatever its size, so the first page is small for a quick first paint and later ones are big.
 const FIRST_PAGE = 500;
@@ -50,7 +50,7 @@ export class Graph {
   /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
   constructor(git, locate, scroll, projects = null, leftScroll = null, filesScroll = null) {
     this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll; this.filesScroll = filesScroll;
-    this.marked = null; this.kids = null; this.leftMarkKey = null;
+    this.ask = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
     this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
     this.worktree = null; this.ab = new Map(); this.wt = new Map(); this.wipSnap = null;
@@ -692,7 +692,8 @@ export class Graph {
 
   /** The props of the menu popup for these refs (`{ type, name, sha }`), or null when none of them can be hidden or soloed. */
   menuFor(refs) {
-    const listed = refs.filter((r) => this.keyRef(r)).map((r) => {
+    const listed = refs.filter((r) => r.type === "commit" || this.keyRef(r)).map((r) => {
+      if (r.type === "commit") return { type: "commit", name: r.name, sha: r.sha, ref: null, hidden: false, solo: false, pr: null };
       const ref = this.keyRef(r), pr = r.type === "tag" || this.prs.root !== this.info?.root ? null : this.prs.byBranch.get(branchOf(r)) ?? null;
       return { type: r.type, name: r.name, sha: r.sha ?? null, ref, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), pr };
     });
@@ -708,14 +709,29 @@ export class Graph {
 
   /** Right-click on a commit row: the menu for the branch labels drawn on it. */
   menuRow(sha) {
-    const at = this.info?.bySha.get(sha);
-    if (!at) return null;
+    const at = this.info?.bySha.get(sha) ?? { heads: [], remotes: [], tags: [] };
+    if (!this.index.has(sha) && !this.info?.bySha.has(sha)) return null;
     const { remotes, tags } = this.show;
     return this.menuFor([
       ...at.heads.map((name) => ({ type: "branch", name, sha })),
       ...(remotes ? at.remotes.map((name) => ({ type: "remote", name, sha })) : []),
       ...(tags ? at.tags.map((name) => ({ type: "tag", name, sha })) : []),
+      { type: "commit", name: `commit ${sha.slice(0, 7)}`, sha },
     ]);
+  }
+
+  /** The text box under a right-click "Ask firstmate...": the ref it was opened on, or null. */
+  askAbout(ref) {
+    const sha = ref.sha, at = sha ? this.index.get(sha) : undefined;
+    this.ask = { type: ref.type, name: ref.name, sha, subject: at === undefined ? "" : this.commits[at].subject ?? "" };
+  }
+
+  /** The note body for the open question with the typed message, or null when none is open. */
+  askNote(message) {
+    const info = this.info;
+    if (!this.ask || !info) return null;
+    const repo = { name: this.web ? this.web.replace("https://github.com/", "") : info.root.split("/").pop(), root: info.root };
+    return askBody({ message, repo, ref: this.ask });
   }
 
   // ---- picking lines of the open file to send to firstmate

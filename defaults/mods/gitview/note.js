@@ -44,3 +44,19 @@ export function noteBody({ message, repo, commit, branches, file, mode, rows }) 
     `Selection:\n${text.replace(/^/gm, "> ")}`,
   ].join("\n");
 }
+
+/**
+ * The note for a question about a branch, tag or commit, from the right-click menu: the tag line, the typed message and labelled context lines.
+ * @param {{ message?: string, repo: { name: string, root: string }, ref: { type: "branch" | "remote" | "tag" | "commit", name: string, sha: string | null, subject?: string } }} note
+ */
+export function askBody({ message, repo, ref }) {
+  const commit = ref.sha ? `${ref.sha.slice(0, 11)}${ref.subject ? ` ${ref.subject}` : ""}` : "";
+  return [
+    NOTE_TAG, (message ?? "").trim() || "Look at this from the Herdr Git view.", "",
+    ...[
+      line("Repo", `${repo.name} (${repo.root})`),
+      ref.type === "commit" ? "" : line(ref.type === "tag" ? "Tag" : ref.type === "remote" ? "Remote branch" : "Branch", ref.name),
+      line(ref.type === "commit" ? "Commit" : "Tip", commit),
+    ].filter(Boolean),
+  ].join("\n");
+}
