@@ -121,8 +121,8 @@ test("the reader asks gh for open and all pull requests in the repo's folder and
   expect(found.get("feat")).toMatchObject({ number: 3, state: "OPEN" });
   const calls = await f.calls();
   expect(calls).toHaveLength(2);
-  expect(calls[0]).toContain("gh pr list --state open");
-  expect(calls[1]).toContain("gh pr list --state all");
+  expect(calls.some((c) => c.includes("gh pr list --state open --limit 300"))).toBe(true);
+  expect(calls.some((c) => c.includes("gh pr list --state all --limit 150"))).toBe(true);
 });
 
 test("a gh that fails rejects instead of answering with no pull requests", async () => {
