@@ -834,6 +834,12 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   `spaces` sidebar nests worktree spaces under their repo's and shows each
   space's repo, branch, ahead/behind and uncommitted changes). Shipped mods
   are Herdr's; duplicate with `mod.clone` before editing.
+  `gitview` (the tab bar's Git button) has two read-only views over one git
+  reader, `git.js`: Changes (this space: branch, ahead/behind the default
+  branch, uncommitted and committed-but-unpushed files, a file's diff on click) and
+  Branches (one row per open space: task, branch, latest commit, commits since
+  the default branch, pushed or not, the PR link from `gh`, read once per branch tip).
+  Both refresh when a space gets focus and every 10 seconds.
 
 ### Check before you finish
 

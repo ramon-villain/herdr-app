@@ -160,6 +160,13 @@
                       "content": {
                         "mod": "changes"
                       }
+                    },
+                    {
+                      "id": "gitview",
+                      "type": "block",
+                      "content": {
+                        "mod": "gitview"
+                      }
                     }
                   ]
                 }

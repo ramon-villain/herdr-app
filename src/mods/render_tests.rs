@@ -419,6 +419,29 @@ fn shipped_initial_descriptions(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn gitview_draws_both_views_from_a_snapshot(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let snap = "{ ok: true, root: '/w', branch: 'fix-login', detached: false, sha: 'abcdef1234', base: 'origin/master', ahead: 3, behind: 1, upstream: null, remote: null, pushed: 'none', unpushedCommits: null, hasHead: true, \
+        uncommitted: [{ path: 'src/a.rs', status: 'M', add: 2, del: 1, fresh: false }], uncommittedTotal: 1, \
+        unpushed: [{ path: 'docs/b.md', status: 'A' }], unpushedTotal: 1, latest: { sha: 'abcdef1234', subject: 'Fix the login redirect', time: Date.now() } }";
+    let branches = format!(
+        "this.mode = 'branches'; this.rows = [{{ space: {{ id: 's1', name: 'Fix login task', active: true }}, on: null, snap: {snap} }}, {{ space: {{ id: 's2', name: 'Plain folder', active: false }}, on: null, snap: {{ ok: false, reason: 'Not a git repository' }} }}]; \
+         this.prs.set(this.prKey({snap}, null), {{ url: 'https://example.invalid/pr/7', number: 7, state: 'OPEN', isDraft: false }});"
+    );
+    let tree = describe(cx, &staged, "mods/gitview", true, props(), updates("current", "current"), Some(&branches)).unwrap();
+    for want in ["Fix login task", "fix-login", "Fix the login redirect", "↑3 ↓1 master", "not pushed", "1 uncommitted", "PR #7", "Not a git repository"] {
+        assert!(tree.contains(want), "branches view lacks {want}: {tree}");
+    }
+    let changes = format!("this.snap = {snap}; this.open = {{ section: 'unpushed', path: 'docs/b.md' }}; this.setLines(['@@ -0,0 +1 @@', '+hello']);");
+    let tree = describe(cx, &staged, "mods/gitview", true, props(), updates("current", "current"), Some(&changes)).unwrap();
+    // Virtual lists describe only their length: two headings and two files, two diff lines.
+    for want in ["fix-login", "\"gitview-files\" ×4", "\"gitview-diff\" ×2"] {
+        assert!(tree.contains(want), "changes view lacks {want}: {tree}");
+    }
+}
+
 /// A mod's localStorage write lands on the executor; one that lands after the
 /// staged folder's drop recreates it, and the folder outlives the test.
 #[gpui::test]
