@@ -48,8 +48,8 @@ function saveRepo(space, path) {
 
 export class Graph {
   /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
-  constructor(git, locate, scroll, projects = null, leftScroll = null) {
-    this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll;
+  constructor(git, locate, scroll, projects = null, leftScroll = null, filesScroll = null) {
+    this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll; this.filesScroll = filesScroll;
     this.marked = null; this.kids = null; this.leftMarkKey = null;
     this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
@@ -366,6 +366,17 @@ export class Graph {
       this.itemsCache = { detail, mode, items };
     }
     return this.itemsCache.items;
+  }
+
+  /** Opens the file before or after the open one, as a click would, and keeps its row in view. The first file opens when none is. */
+  stepFile(direction, cx) {
+    const items = this.fileItems(), at = items.findIndex((item) => item.file && item.file === this.file);
+    let next = at;
+    do next += at < 0 ? 1 : direction; while (next >= 0 && next < items.length && !items[next].file);
+    if (next < 0 || next >= items.length) return false;
+    this.filesScroll?.scroll_to_item(next, "center");
+    this.openFile(items[next].file.path, cx);
+    return true;
   }
 
   /** Reads the diffs of the first files in the list in one git run, while the person is still looking at the commit. */
