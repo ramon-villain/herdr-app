@@ -160,3 +160,54 @@ export function withMarkers(commits, now = Date.now()) {
     return marker ? { ...c, marker } : c;
   });
 }
+
+const FIND_CAP = 5000;
+
+/** Every case-insensitive occurrence of `query` in the rows' text, as { row, from, to }, in reading order and capped. */
+export function findMatches(rows, query) {
+  const needle = query.toLowerCase(), out = [];
+  if (!needle) return out;
+  for (let row = 0; row < rows.length && out.length < FIND_CAP; row++) {
+    if (rows[row].kind === "@") continue;
+    const text = (rows[row].text ?? "").toLowerCase();
+    for (let from = text.indexOf(needle); from >= 0 && out.length < FIND_CAP; from = text.indexOf(needle, from + needle.length)) out.push({ row, from, to: from + needle.length });
+  }
+  return out;
+}
+
+/** The match to land on when stepping from `at` (-1 for none yet) through `count` matches, wrapping at both ends. */
+export function stepMatch(count, at, direction) {
+  if (!count) return -1;
+  if (at < 0) return direction > 0 ? 0 : count - 1;
+  return (at + direction + count) % count;
+}
+
+/** Cuts line segments at the edges of `ranges` ({ from, to, current }) and flags the pieces inside one as `find: 1`, or 2 for the current match. */
+export function markFinds(segments, ranges) {
+  if (!ranges.length) return segments;
+  const out = [];
+  let at = 0;
+  for (const seg of segments) {
+    const end = at + seg.text.length;
+    const cuts = [...new Set(ranges.flatMap((r) => [r.from, r.to]))].filter((c) => c > at && c < end).sort((a, b) => a - b);
+    let from = at;
+    for (const cut of [...cuts, end]) {
+      const hit = ranges.find((r) => from >= r.from && cut <= r.to);
+      out.push({ ...seg, text: seg.text.slice(from - at, cut - at), find: hit ? (hit.current ? 2 : 1) : 0 });
+      from = cut;
+    }
+    at = end;
+  }
+  return out;
+}
+
+/** What a key does to the find bar of the file pane, or null when it is not for the bar. `mods` is the event's modifiers. */
+export function findKey(key, mods, open) {
+  const command = mods.platform || mods.control;
+  if (command && !mods.shift && !mods.alt && key === "f") return "open";
+  if (!open) return null;
+  if (key === "escape") return "close";
+  if (key === "enter" && !command) return mods.shift ? "prev" : "next";
+  if (command && !mods.alt && key === "g") return mods.shift ? "prev" : "next";
+  return null;
+}

@@ -1,7 +1,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { settings } from "herdr";
-import { lineSegments } from "./model.js";
+import { lineSegments, markFinds } from "./model.js";
 import { diffPalette } from "./palette.js";
 
 const ROW = 24, LANE = 9, MID = 12, LEFT_W = 300, RIGHT_W = 390, LABEL_W = 170, GRAPH_MAX = 230;
@@ -112,7 +112,7 @@ function graphList(graph, view, t) {
 
 // ---- the diff that replaces the graph
 
-function diffLine(r, ext) {
+function diffLine(r, ext, finds = []) {
   const p = diffPalette;
   if (r.kind === "@") return h_flex().w_full().h(ROW - 4).flex_none().items_center().px(12).bg(p.hunk.ground).text_color(p.hunk.text).child(div().truncate().child(r.text));
   const add = r.kind === "+", del = r.kind === "-", side = add ? p.added : p.removed;
@@ -122,8 +122,9 @@ function diffLine(r, ext) {
     .child(gutter(r.old)).child(gutter(r.next))
     .child(div().w(14).flex_none().text_color(add || del ? side.sign : p.lineNumber).child(add ? "+" : del ? "−" : ""))
     .child(h_flex().flex_1().min_w(0).whitespace_nowrap().overflow_hidden()
-      .children((r.kind === "" ? [{ text: r.text, kind: "", hl: false }] : lineSegments(r.text, ext, r.mark)).map((s) =>
-        div().flex_none().text_color(s.hl ? p.wordText : p.syntax[s.kind]).when(s.hl, (e) => e.bg(side.word)).child(s.text))));
+      .children(markFinds(r.kind === "" ? [{ text: r.text, kind: "", hl: false }] : lineSegments(r.text, ext, r.mark), finds).map((s) =>
+        div().flex_none().text_color(s.find === 2 ? p.find.currentText : s.hl ? p.wordText : p.syntax[s.kind])
+          .when(s.hl, (e) => e.bg(side.word)).when(s.find > 0, (e) => e.bg(s.find === 2 ? p.find.current : p.find.match)).child(s.text))));
 }
 
 function pill(t, id, text, on, onClick) {
@@ -131,7 +132,20 @@ function pill(t, id, text, on, onClick) {
     .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted).hover((s) => s.bg(t.hover)).on_click(onClick).child(text);
 }
 
+/** The find bar over the top right of the file pane: the text, the place of the current match among all, and the way to step and close. */
+function findBar(graph, view, t, total) {
+  const at = Math.min(graph.find.at, total - 1);
+  return h_flex().absolute().top(8).right(18).h(32).px(8).gap(6).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12)
+    .child(Input.new(view.findInput).w(180).h(24).px(6).rounded(4).bg(t.background).text_size(12).text_color(t.foreground))
+    .child(div().w(54).flex_none().text_size(11).text_color(t.muted).child(graph.find.query ? (total ? `${at + 1} of ${total}` : "No results") : ""))
+    .child(pill(t, "graph-find-prev", "↑", false, () => view.findStep(-1)))
+    .child(pill(t, "graph-find-next", "↓", false, () => view.findStep(1)))
+    .child(pill(t, "graph-find-close", "✕", false, (_e, cx) => view.findClose(cx)));
+}
+
 function diffPane(graph, view, t, cx) {
+  const hits = graph.findHits(), at = Math.min(graph.find.at, hits.length - 1), byRow = new Map();
+  hits.forEach((h, i) => byRow.set(h.row, [...(byRow.get(h.row) ?? []), { from: h.from, to: h.to, current: i === at }]));
   const file = graph.file, parts = file.path.split("/"), name = parts.pop(), ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
   const rows = graph.view?.rows ?? [];
   return v_flex().h_full().flex_1().min_h(0).min_w(0).font_family(settings().font_family ?? "JetBrains Mono")
@@ -147,9 +161,10 @@ function diffPane(graph, view, t, cx) {
         .child(pill(t, "graph-hunk-prev", "↑", false, () => graph.step(-1, view.diffScroll)))
         .child(pill(t, "graph-hunk-next", "↓", false, () => graph.step(1, view.diffScroll)))))
     .child(div().flex_1().min_h(0).relative().text_size(11).bg(diffPalette.ground)
-      .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r) => diffLine(r, ext)))
+      .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r, k) => diffLine(r, ext, byRow.get(range.start + k))))
         .track_scroll(view.diffScroll).size_full())
       .child(Scrollbar.vertical("graph-diff").absolute().inset_0())
+      .when(graph.find.open, (e) => e.child(findBar(graph, view, t, hits.length)))
       .when(!graph.view, (e) => e.child(div().absolute().p(14).text_color(t.dim).child("Loading…")))
       .when(Boolean(graph.view?.cut), (e) => e.child(div().absolute().bottom(8).right(14).px(8).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child("Long file: showing the first lines"))));
 }
@@ -289,7 +304,7 @@ function repoMenu(graph, t) {
 
 export function renderGraphTab(graph, view, t) {
   const items = graph.fileItems();
-  return v_flex().id("gitgraph").size_full().min_h(0).relative().bg(t.background).text_color(t.foreground).text_size(13)
+  return v_flex().id("gitgraph").track_focus(view.handle).on_key_down((e, cx) => view.onKey(e, cx)).size_full().min_h(0).relative().bg(t.background).text_color(t.foreground).text_size(13)
     .child(topBar(graph, t))
     .child(h_flex().w_full().flex_1().min_h(0).items_stretch()
       .child(leftPane(graph, view, t))

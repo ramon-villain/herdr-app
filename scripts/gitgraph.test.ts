@@ -9,7 +9,7 @@ import { Graph } from "../defaults/mods/gitview/graph.js";
 // @ts-ignore
 import { layoutLanes, COLORS } from "../defaults/mods/gitview/lanes.js";
 // @ts-ignore
-import { agoLabel, branchTree, fileTree, wordDiff, markWords, tokenize, lineSegments, hunkStarts, stepHunk } from "../defaults/mods/gitview/model.js";
+import { agoLabel, branchTree, fileTree, wordDiff, markWords, tokenize, lineSegments, hunkStarts, stepHunk, findMatches, stepMatch, markFinds, findKey } from "../defaults/mods/gitview/model.js";
 
 const c = (sha: string, ...parents: string[]) => ({ sha, parents });
 const lay = (commits: any[]) => layoutLanes(commits).rows;
@@ -845,4 +845,91 @@ test("a space on another machine offers no local clones", async () => {
   await g.load(cx);
   await settle();
   expect(g.repos).toEqual([]);
+});
+
+// ---- find in the file pane
+
+const findRows = [
+  { kind: "@", text: "@@ -1,3 +1,3 @@ Foo" },
+  { kind: "", text: "foo bar FOO" },
+  { kind: "+", text: "no hit here" },
+  { kind: "-", text: "a foofoo" },
+];
+
+test("find matches case-insensitively, skips hunk headers, and finds each occurrence once", () => {
+  expect(findMatches(findRows, "foo")).toEqual([
+    { row: 1, from: 0, to: 3 }, { row: 1, from: 8, to: 11 }, { row: 3, from: 2, to: 5 }, { row: 3, from: 5, to: 8 },
+  ]);
+  expect(findMatches(findRows, "")).toEqual([]);
+  expect(findMatches(findRows, "zzz")).toEqual([]);
+});
+
+test("stepping wraps at both ends and starts from the matching end", () => {
+  expect(stepMatch(3, -1, 1)).toBe(0);
+  expect(stepMatch(3, -1, -1)).toBe(2);
+  expect(stepMatch(3, 2, 1)).toBe(0);
+  expect(stepMatch(3, 0, -1)).toBe(2);
+  expect(stepMatch(0, -1, 1)).toBe(-1);
+});
+
+test("find marks cut the segments at the match edges and flag the current one stronger", () => {
+  const segs = [{ text: "foo bar", kind: "" }, { text: " baz", kind: "string" }];
+  const out = markFinds(segs, [{ from: 2, to: 5, current: false }, { from: 8, to: 10, current: true }]);
+  expect(out.map((s: any) => [s.text, s.find])).toEqual([["fo", 0], ["o b", 1], ["ar", 0], [" ", 0], ["ba", 2], ["z", 0]]);
+  expect(markFinds(segs, [])).toBe(segs);
+});
+
+test("cmd+f opens the bar, and enter, cmd+g and escape only act while it is open", () => {
+  const mod = (o: object = {}) => ({ platform: false, control: false, shift: false, alt: false, ...o });
+  expect(findKey("f", mod({ platform: true }), false)).toBe("open");
+  expect(findKey("f", mod({ control: true }), false)).toBe("open");
+  expect(findKey("f", mod({ platform: true, shift: true }), false)).toBeNull();
+  expect(findKey("f", mod(), false)).toBeNull();
+  expect(findKey("enter", mod(), false)).toBeNull();
+  expect(findKey("g", mod({ platform: true }), false)).toBeNull();
+  expect(findKey("escape", mod(), false)).toBeNull();
+  expect(findKey("enter", mod(), true)).toBe("next");
+  expect(findKey("enter", mod({ shift: true }), true)).toBe("prev");
+  expect(findKey("g", mod({ platform: true }), true)).toBe("next");
+  expect(findKey("g", mod({ platform: true, shift: true }), true)).toBe("prev");
+  expect(findKey("escape", mod(), true)).toBe("close");
+  expect(findKey("a", mod(), true)).toBeNull();
+});
+
+test("the graph finds in the open file, steps with wrap-around, scrolls to the match, and closes", () => {
+  const { g } = repoGraph();
+  const scrolled: any[] = [];
+  const handle = { scroll_to_item: (i: number, how: string) => scrolled.push([i, how]) };
+  expect(g.openFind()).toBe(false);
+  g.file = { path: "a.ts" }; g.view = { rows: findRows };
+  expect(g.openFind()).toBe(true);
+  g.setFind("foo", handle);
+  expect(g.findHits().length).toBe(4);
+  expect(g.find.at).toBe(0);
+  expect(scrolled.at(-1)).toEqual([1, "center"]);
+  g.stepFind(1, handle); g.stepFind(1, handle); g.stepFind(1, handle);
+  expect([g.find.at, scrolled.at(-1)]).toEqual([3, [3, "center"]]);
+  g.stepFind(1, handle);
+  expect(g.find.at).toBe(0);
+  g.stepFind(-1, handle);
+  expect(g.find.at).toBe(3);
+  g.setFind("zzz", handle);
+  expect(g.findHits()).toEqual([]);
+  expect(g.find.at).toBe(-1);
+  g.closeFind();
+  g.setFind("foo", handle);
+  expect(g.findHits()).toEqual([]);
+});
+
+test("find follows the rows of the other view and goes away with the file", () => {
+  const { g } = repoGraph();
+  const handle = { scroll_to_item() {} };
+  g.file = { path: "a.ts" }; g.view = { rows: findRows };
+  g.openFind(); g.setFind("bar", handle);
+  expect(g.findHits().length).toBe(1);
+  g.view = { rows: [{ kind: "", text: "bar bar bar" }] };
+  expect(g.findHits().length).toBe(3);
+  g.closeFile({ notify() {} });
+  expect(g.find.open).toBe(false);
+  expect(g.findHits()).toEqual([]);
 });

@@ -1,6 +1,6 @@
 // State and loading for the whole-tab Git graph. It only reads, through the shared reader in git.js.
 import { layoutLanes } from "./lanes.js";
-import { agoLabel, branchTree, fileTree, hunkStarts, markWords, stepHunk } from "./model.js";
+import { agoLabel, branchTree, fileTree, hunkStarts, markWords, stepHunk, findMatches, stepMatch } from "./model.js";
 import { diffRows } from "./git.js";
 
 // Every page walks the whole history to sort it, whatever its size, so the first page is small for a quick first paint and later ones are big.
@@ -54,6 +54,7 @@ export class Graph {
     this.commits = []; this.rows = []; this.index = new Map(); this.carry = undefined; this.done = false; this.lastAgo = null; this.maxWidth = 1;
     this.selected = null; this.detail = null; this.detailError = null; this.panelOpen = true;
     this.file = null; this.view = null; this.mode = "diff"; this.hunkAt = -1;
+    this.find = { open: false, query: "", at: -1 }; this.findCache = null;
     this.filter = ""; this.collapsed = new Set(); this.open = { ...OPEN };
     this.hidden = new Set(); this.soloed = new Set(); this.menu = null;
     this.query = ""; this.matches = null; this.onlyMatches = false; this.searching = false; this.hitAt = -1; this.hitCache = null; this.searchRun = 0;
@@ -447,7 +448,37 @@ export class Graph {
     this.prefetchWhole();
   }
 
-  closeFile(cx) { this.file = null; this.view = null; cx.notify(); }
+  closeFile(cx) { this.file = null; this.view = null; this.find.open = false; cx.notify(); }
+
+  // ---- find in the open file
+
+  /** The matches of the find bar's text in the rows on show; the cache holds until the rows or the text change. */
+  findHits() {
+    const rows = this.view?.rows, { open, query } = this.find;
+    if (!open || !query || !rows) return [];
+    if (this.findCache?.rows !== rows || this.findCache.query !== query) this.findCache = { rows, query, hits: findMatches(rows, query) };
+    return this.findCache.hits;
+  }
+
+  openFind() {
+    if (!this.file) return false;
+    this.find = { ...this.find, open: true };
+    return true;
+  }
+
+  closeFind() { this.find = { ...this.find, open: false }; }
+
+  /** New text for the bar: the first match from the top of the file becomes the current one. */
+  setFind(query, handle) {
+    this.find = { ...this.find, query, at: -1 };
+    this.stepFind(1, handle);
+  }
+
+  stepFind(direction, handle) {
+    const hits = this.findHits();
+    this.find.at = stepMatch(hits.length, this.find.at, direction);
+    if (this.find.at >= 0) handle.scroll_to_item(hits[this.find.at].row, "center");
+  }
 
   step(direction, handle) {
     const at = stepHunk(hunkStarts(this.view?.rows ?? []), this.hunkAt, direction);

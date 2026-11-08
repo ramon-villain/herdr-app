@@ -2,6 +2,7 @@ import { View } from "gpui-kit";
 import { InputState, VirtualListScrollHandle } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, window, theme, run, props as modProps } from "herdr";
 import { createReader, diffRows } from "./git.js";
+import { findKey } from "./model.js";
 import { renderPanel } from "./views.js";
 import { Graph } from "./graph.js";
 import { renderGraphTab } from "./graphview.js";
@@ -48,9 +49,43 @@ export default class GitView extends View {
     this.input.on("change", (_e, cx) => this.graph.setFilter(this.input.value(), cx));
     this.search = InputState.new({ placeholder: "Search message, author, sha or file" });
     this.search.on("change", (_e, cx) => this.graph.setQuery(this.search.value(), cx));
+    this.handle = cx.focus_handle();
+    this.findInput = InputState.new({ placeholder: "Find in file" });
+    this.findInput.on("change", (_e, cx) => { this.graph.setFind(this.findInput.value(), this.diffScroll); cx.notify(); });
+    // Enter may reach the field's submit, onKey, or both; onKey knows about shift, so submit waits a moment and steps only if onKey did not.
+    this.findInput.on("submit", (_e, cx) => {
+      const pressed = Date.now();
+      cx.timer.after(30, (cx) => { if ((this.steppedAt ?? 0) < pressed) { this.findStep(1); cx.notify(); } });
+    });
     this.graph.load(cx);
     cx.timer.every(15000, (cx) => this.graph.poll(cx).catch(() => null));
     cx.timer.every(400, (cx) => { if (this.graph.wantMore) this.graph.more(cx); });
+  }
+
+  findStep(direction) {
+    this.steppedAt = Date.now();
+    this.graph.stepFind(direction, this.diffScroll);
+  }
+
+  findClose(cx) {
+    this.graph.closeFind();
+    this.handle.focus();
+    cx.notify();
+  }
+
+  /** cmd+f and its keys, only while something in the Git graph tab holds the keyboard: this handler sits on the tab's root, so no other pane sees them. */
+  onKey(e, cx) {
+    const action = findKey(e.key, e.modifiers, this.graph.find.open);
+    if (!action || (action === "open" && !this.graph.file)) return;
+    if (action === "open") {
+      this.graph.openFind();
+      this.findInput.focus();
+      // The field is drawn by the next render, so it can only take the keyboard after that.
+      cx.timer.after(50, () => this.findInput.focus());
+    } else if (action === "close") this.findClose(cx);
+    else this.findStep(action === "next" ? 1 : -1);
+    cx.stop_propagation();
+    cx.notify();
   }
 
   setMode(mode, cx) {
