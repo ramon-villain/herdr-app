@@ -554,11 +554,12 @@ export class Graph {
     if (!this.soloed.delete(ref)) { this.soloed.add(ref); this.hidden.delete(ref); }
     this.refsChanged(cx);
   }
+  stopSolo(cx) { this.soloed.clear(); this.refsChanged(cx); }
   showAll(cx) { this.hidden.clear(); this.soloed.clear(); this.refsChanged(cx); }
   refsChanged(cx) {
     this.leftCache = null;
     if (this.query.length >= 2) this.setQuery(this.query, cx);
-    this.relog(cx);
+    this.later(cx, (task) => this.relog(task)).catch(() => null);
   }
 
   /** "Showing 12 of 4278 branches": what the graph draws, counting local and remote branches. */
