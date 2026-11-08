@@ -177,6 +177,10 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
                 "exec" if first == "sh" && a.get(1).map(from_host).and_then(|v| v.get(2).cloned()) == Some(json!("files")) => {
                     Some(json!({"code":0,"stdout":"d\u{0}src\u{0}f\u{0}README.md\u{0}","stderr":""}))
                 }
+                // The Git graph's repository dropdown lists the clones in a projects folder: none here.
+                "exec" if first == "sh" && a.get(1).map(from_host).and_then(|v| v.get(1).and_then(|c| c.as_str().map(|c| c.starts_with("for d in")))) == Some(true) => {
+                    Some(json!({"code":0,"stdout":"","stderr":""}))
+                }
                 "exec"
                     if first == "git"
                         && [
@@ -472,6 +476,12 @@ fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_grap
         assert!(tree.contains(want), "diff pane lacks {want}: {tree}");
     }
     assert!(!tree.contains("\"graph-rows\""), "the graph stays under the diff: {tree}");
+    assert!(!tree.contains("graph-find-next"), "the find bar stays shut until cmd+f: {tree}");
+    let found = format!("{diff} g.openFind(); g.setFind('const', {{ scroll_to_item() {{}} }});");
+    let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&found)).unwrap();
+    for want in ["graph-find-next", "graph-find-prev", "graph-find-close", "1 of 2"] {
+        assert!(tree.contains(want), "find bar lacks {want}: {tree}");
+    }
 }
 
 /// A mod's localStorage write lands on the executor; one that lands after the
