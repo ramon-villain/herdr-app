@@ -23,6 +23,7 @@ const GROUPS = ["Recent", "Tab", "Pane", "Space", "Layout", "Terminal", "Agent",
 const NAMED = [
   ["tab.new", {}, "Tab", "New tab", "tab agent new task"],
   ["mod.open", { name: "picker" }, "Tab", "Go to space or tab…", "switch jump find"],
+  ["tab.new", { mod: "gitview", props: { graph: true }, name: "Git graph" }, "Tab", "Git graph", "git history branches commits log diff"],
   ["tab.rename", {}, "Tab", "Rename tab", "tab"],
   ["tab.close", {}, "Tab", "Close tab", "tab kill"],
   ["tab.next", {}, "Tab", "Next tab", "tab"],

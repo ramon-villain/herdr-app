@@ -442,6 +442,38 @@ fn gitview_draws_both_views_from_a_snapshot(cx: &mut TestAppContext) {
     }
 }
 
+#[gpui::test]
+fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_graph(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    let state = format!(
+        "const g = this.graph; g.error = null; g.worktree = '/fixture/project'; g.leftCache = null; \
+         g.info = {{ ok: true, root: '/fixture/project', head: '{a}', base: 'origin/master', heads: [{{ name: 'feat/x', sha: '{a}' }}, {{ name: 'master', sha: '{b}' }}], remotes: [], tags: [], \
+           bySha: new Map([['{a}', {{ heads: ['feat/x'], remotes: [], tags: ['v1'] }}]]), worktrees: [{{ path: '/fixture/project', sha: '{a}', branch: 'feat/x' }}], stashes: [] }}; \
+         g.commits = [{{ sha: '{a}', parents: ['{b}'], author: 'Ramon Villain', time: Date.now(), subject: 'feat(charts): note a slow chart', body: 'it takes longer than 3 seconds', marker: '1 minute ago' }}, \
+                      {{ sha: '{b}', parents: [], author: 'Ramon Villain', time: Date.now(), subject: 'first' }}]; \
+         g.rows = [{{ sha: '{a}', lane: 0, color: 0, top: false, merging: [], pass: [], edges: [{{ to: 0, color: 0 }}], width: 1 }}, {{ sha: '{b}', lane: 0, color: 0, top: true, merging: [], pass: [], edges: [], width: 1 }}]; \
+         g.index = new Map([['{a}', 0], ['{b}', 1]]); g.selected = '{a}'; \
+         g.detail = {{ sha: '{a}', parents: ['{b}'], from: '{b}', author: 'Ramon Villain', time: Date.now(), message: 'feat(charts): note a slow chart\\n\\nthe body', total: 2, \
+           files: [{{ path: 'src/Chart.tsx', status: 'M', add: 3, del: 1 }}, {{ path: 'src/new.ts', status: 'A', add: 5, del: 0 }}] }};"
+    );
+    let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&state)).unwrap();
+    for want in ["Ramon Villain", "commit: aaaaaaa", "feat(charts): note a slow chart", "2 files changed", "parent: bbbbbb", "BRANCH / TAG", "COMMIT MESSAGE", "\"graph-rows\" ×2", "\"graph-files\" ×2", "\"graph-left\"", "read only"] {
+        assert!(tree.contains(want), "graph tab lacks {want}: {tree}");
+    }
+    assert!(!tree.contains("Diff View"), "the diff shows before a file is opened: {tree}");
+    let diff = format!(
+        "{state} g.file = g.detail.files[0]; g.view = {{ rows: [{{ kind: '@', text: '@@ -1,2 +1,2 @@' }}, {{ kind: '-', old: 1, text: 'const a = 1;' }}, {{ kind: '+', next: 1, text: 'const a = 2;', mark: [10, 11] }}] }};"
+    );
+    let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&diff)).unwrap();
+    for want in ["Diff View", "File View", "src/", "Chart.tsx", "\"graph-diff\" ×3", "commit: aaaaaaa"] {
+        assert!(tree.contains(want), "diff pane lacks {want}: {tree}");
+    }
+    assert!(!tree.contains("\"graph-rows\""), "the graph stays under the diff: {tree}");
+}
+
 /// A mod's localStorage write lands on the executor; one that lands after the
 /// staged folder's drop recreates it, and the folder outlives the test.
 #[gpui::test]
@@ -1021,3 +1053,4 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
     assert!(tree.contains("commands"), "unbound hint still offers commands: {tree}");
     assert!(!tree.contains("Shift P"), "unbound hint must not invent a key: {tree}");
 }
+

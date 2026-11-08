@@ -1,7 +1,10 @@
 import { View } from "gpui-kit";
-import { spaces, panes, focused, exec, readTextFile, window, theme, run } from "herdr";
+import { InputState, VirtualListScrollHandle } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, window, theme, run, props as modProps } from "herdr";
 import { createReader, diffRows } from "./git.js";
 import { renderPanel } from "./views.js";
+import { Graph } from "./graph.js";
+import { renderGraphTab } from "./graphview.js";
 
 const REFRESH_MS = 10000;
 const WORKERS = 3;
@@ -23,11 +26,29 @@ const key = () => JSON.stringify(location());
 export default class GitView extends View {
   init(_props, cx) {
     this.git = createReader({ exec, readTextFile });
+    if (modProps()?.graph) return this.initGraph(cx);
     this.mode = "changes";
     this.snap = null; this.error = null; this.rows = []; this.diff = []; this.diffWidth = 300;
     this.open = null; this.prs = new Map(); this.ghMissing = new Set(); this.prQueue = [];
     this.refresh(cx);
     cx.timer.every(REFRESH_MS, (cx) => this.refresh(cx));
+  }
+
+  // The whole-tab graph: the repo of the active space, whichever pane holds the keyboard.
+  initGraph(cx) {
+    this.graphScroll = VirtualListScrollHandle.new();
+    this.diffScroll = VirtualListScrollHandle.new();
+    this.graph = new Graph(this.git, () => {
+      const space = spaces().find((s) => s.active);
+      return { dir: space ? place(space, panes()) : null, on: space?.machine ?? null };
+    }, this.graphScroll);
+    this.input = InputState.new({ placeholder: "Filter branches, tags and stashes" });
+    this.input.on("change", (_e, cx) => this.graph.setFilter(this.input.value(), cx));
+    this.search = InputState.new({ placeholder: "Search message, author, sha or file" });
+    this.search.on("change", (_e, cx) => this.graph.setQuery(this.search.value(), cx));
+    this.graph.load(cx);
+    cx.timer.every(15000, (cx) => this.graph.poll(cx).catch(() => null));
+    cx.timer.every(400, (cx) => { if (this.graph.wantMore) this.graph.more(cx); });
   }
 
   setMode(mode, cx) {
@@ -157,12 +178,17 @@ export default class GitView extends View {
     run("space.select", { id });
   }
 
+  openGraph() {
+    run("tab.new", { mod: "gitview", props: { graph: true }, name: "Git graph" });
+  }
+
   openLink(url) {
     const platform = window()?.platform;
     exec(platform === "macos" ? "open" : platform === "windows" ? "explorer" : "xdg-open", [url]).catch(() => null);
   }
 
   render(cx) {
+    if (this.graph) return renderGraphTab(this.graph, this, theme());
     if (this.stamp() !== this.seen) this.refresh(cx);
     return renderPanel(this, theme(), cx);
   }

@@ -82,14 +82,102 @@ export function diffRows(lines) {
     const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
     if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
     const kind = line[0];
-    if (kind === "-") return { kind, number: old++, text: line.slice(1) || " " };
-    if (kind === "+") return { kind, number: next++, text: line.slice(1) || " " };
-    if (kind === " ") { old++; return { kind, number: next++, text: line.slice(1) || " " }; }
+    if (kind === "-") return { kind, number: old, old: old++, text: line.slice(1) || " " };
+    if (kind === "+") return { kind, number: next, next: next++, text: line.slice(1) || " " };
+    if (kind === " ") return { kind, number: next, old: old++, next: next++, text: line.slice(1) || " " };
     return { kind: "", text: line };
   });
 }
 
 const clip = (lines) => lines.slice(0, DIFF_LINES).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
+
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const FULL_FILE_LINES = 6000;
+
+/** `for-each-ref` with %(refname) %(objectname) %(*objectname), NUL-separated: local, remote and tag refs, tags peeled to their commit. */
+export function parseRefs(text) {
+  const heads = [], remotes = [], tags = [], bySha = new Map();
+  const put = (sha, kind, name) => {
+    let at = bySha.get(sha);
+    if (!at) bySha.set(sha, at = { heads: [], remotes: [], tags: [] });
+    at[kind].push(name);
+  };
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    const [ref, sha, peeled] = line.split("\0"), target = peeled || sha;
+    if (ref.startsWith("refs/heads/")) { const name = ref.slice(11); heads.push({ name, sha }); put(sha, "heads", name); }
+    else if (ref.startsWith("refs/remotes/")) {
+      const name = ref.slice(13);
+      if (name.endsWith("/HEAD")) continue;
+      remotes.push({ name, sha }); put(sha, "remotes", name);
+    } else if (ref.startsWith("refs/tags/")) { const name = ref.slice(10); tags.push({ name, sha: target }); put(target, "tags", name); }
+  }
+  return { heads, remotes, tags, bySha };
+}
+
+/** `log --format=%H %P %an %ct %s %b` with unit separators and a record separator after each commit. */
+export function parseLog(text) {
+  const commits = [];
+  for (const record of text.split("\x1e")) {
+    const [sha, parents, author, time, subject, body] = record.replace(/^\n/, "").split("\x1f");
+    if (!sha || sha.length < 40) continue;
+    commits.push({ sha, parents: parents ? parents.split(" ") : [], author, time: Number(time) * 1000, subject, body: (body ?? "").replace(/\s+/g, " ").trim().slice(0, 300) });
+  }
+  return commits;
+}
+
+/** `worktree list --porcelain`: one block per checkout. */
+export function parseWorktrees(text) {
+  return text.split("\n\n").filter(Boolean).map((block) => {
+    const w = { path: "", sha: null, branch: null, detached: false, bare: false };
+    for (const line of block.split("\n")) {
+      if (line.startsWith("worktree ")) w.path = line.slice(9);
+      else if (line.startsWith("HEAD ")) w.sha = line.slice(5);
+      else if (line.startsWith("branch ")) w.branch = line.slice(7).replace(/^refs\/heads\//, "");
+      else if (line === "detached") w.detached = true;
+      else if (line === "bare") w.bare = true;
+    }
+    return w;
+  }).filter((w) => w.path);
+}
+
+/** `stash list --format=%gd %H %ct %P %gs` joined by unit separators: a stash's first parent is the commit it was made on. */
+export function parseStashes(text) {
+  return text.split("\n").filter(Boolean).map((line) => {
+    const [name, sha, time, parents, subject] = line.split("\x1f");
+    return { name, sha, time: Number(time) * 1000, base: parents.split(" ")[0] || null, subject };
+  });
+}
+
+/** `for-each-ref --format=%(refname) %(ahead-behind:<base>)`. */
+export function parseAheadBehind(text) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const parts = line.split(" ");
+    if (parts.length < 3) continue;
+    const behind = Number(parts.pop()), ahead = Number(parts.pop());
+    out.set(parts.join(" ").replace(/^refs\/heads\//, ""), { ahead, behind });
+  }
+  return out;
+}
+
+const escapeGlob = (name) => name.replace(/[\\*?[\]]/g, "\\$&");
+
+/**
+ * The ref arguments of a log: every branch, remote branch and tag unless some are hidden, or only the soloed refs.
+ * Refs are full names. git applies each --exclude to the next --branches, --remotes or --tags only, and matches it
+ * without that option's refs/<kind>/ prefix. `extra` are commits to walk as well: the ones stashes were made on.
+ */
+export function refArgs({ hidden = [], solo = [], remotes = true, tags = true, extra = [] } = {}) {
+  if (solo.length) return solo;
+  const args = [];
+  for (const [prefix, option] of [["refs/heads/", "--branches"], ["refs/remotes/", "--remotes"], ["refs/tags/", "--tags"]]) {
+    if ((prefix === "refs/remotes/" && !remotes) || (prefix === "refs/tags/" && !tags)) continue;
+    for (const ref of hidden) if (ref.startsWith(prefix)) args.push(`--exclude=${escapeGlob(ref.slice(prefix.length))}`);
+    args.push(option);
+  }
+  return [...args, "HEAD", ...extra];
+}
 
 /**
  * @param {{ exec: Function, readTextFile?: Function }} host herdr's `exec` and `readTextFile`.
@@ -168,5 +256,82 @@ export function createReader({ exec, readTextFile }) {
     return { lines: first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : clip(all.slice(first)) };
   }
 
-  return { read, diff };
+  /** What the graph view starts from: the repo holding `folder`, its checkouts, refs and stashes. */
+  async function repo(folder, on) {
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, on });
+    if (top.code !== 0) return { ok: false, reason: "Not a git repository" };
+    const root = top.stdout.trim();
+    const [worktrees, refs, stashes, head, base] = await Promise.all([
+      git(root, on, ["worktree", "list", "--porcelain"]),
+      git(root, on, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(*objectname)", "refs/heads", "refs/remotes", "refs/tags"], 30000),
+      git(root, on, ["stash", "list", "--format=%gd%x1f%H%x1f%ct%x1f%P%x1f%gs"]),
+      git(root, on, ["rev-parse", "HEAD"]),
+      git(root, on, ["for-each-ref", "--format=%(refname)%09%(symref)", "refs/remotes/origin/HEAD", "refs/remotes/origin/master", "refs/remotes/origin/main"]),
+    ]);
+    if (refs.code !== 0) return { ok: false, reason: refs.stderr.trim() || "git for-each-ref failed" };
+    return {
+      ok: true, root, head: head.code === 0 ? head.stdout.trim() : null, base: base.code === 0 ? pickBase(base.stdout) : null,
+      worktrees: worktrees.code === 0 ? parseWorktrees(worktrees.stdout) : [],
+      stashes: stashes.code === 0 ? parseStashes(stashes.stdout) : [],
+      ...parseRefs(refs.stdout),
+    };
+  }
+
+  /** Commits ahead of and behind `base` for every local branch. Slow on thousands of branches, so it is its own call. */
+  async function aheadBehind(root, base, on) {
+    if (!base) return new Map();
+    const r = await git(root, on, ["for-each-ref", `--format=%(refname) %(ahead-behind:${base})`, "refs/heads"], 60000);
+    return r.code === 0 ? parseAheadBehind(r.stdout) : new Map();
+  }
+
+  /** One page of the log over every branch, remote branch, tag and HEAD (not the stash, which is drawn in its own section), parents after children. `skip` is the commits already loaded. */
+  async function logPage(root, skip, on, size, refs) {
+    const r = await git(root, on, ["log", ...refArgs(refs), "--topo-order", "--format=%H%x1f%P%x1f%an%x1f%ct%x1f%s%x1f%b%x1e", `--skip=${skip}`, `-n${size}`], 60000);
+    if (r.code !== 0) throw new Error(r.stderr);
+    return parseLog(r.stdout);
+  }
+
+  /** The commits whose message, author or a changed file's path contain `text` (case-insensitive), at most 5000 of each kind. */
+  async function search(root, text, on, refs) {
+    const base = ["log", ...refArgs(refs), "--format=%H", "-n5000", "-i"];
+    const needle = escapeGlob(text);
+    const runs = await Promise.all([
+      git(root, on, [...base, "--fixed-strings", `--grep=${text}`], 60000),
+      git(root, on, [...base, "--fixed-strings", `--author=${text}`], 60000),
+      git(root, on, [...base, "--", `:(icase,glob)**/*${needle}*`], 60000),
+    ]);
+    const shas = new Set();
+    for (const r of runs) if (r.code === 0) for (const sha of r.stdout.split("\n")) if (sha) shas.add(sha);
+    return shas;
+  }
+
+  /** A commit's message, author and changed files (against its first parent, or the empty tree for a root commit). */
+  async function commit(root, sha, on) {
+    const meta = await git(root, on, ["log", "-1", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%B", sha]);
+    if (meta.code !== 0) throw new Error(meta.stderr);
+    const [hash, parents, author, email, time, ...message] = meta.stdout.split("\x1f");
+    const parent = parents ? parents.split(" ") : [], from = parent[0] ?? EMPTY_TREE;
+    const [names, numstat] = await Promise.all([
+      git(root, on, ["diff", "--name-status", "-z", "--no-renames", from, sha]),
+      git(root, on, ["diff", "--numstat", "-z", "--no-renames", from, sha], 30000),
+    ]);
+    const stats = numstat.code === 0 ? parseStats([numstat]) : {};
+    const listed = names.code === 0 ? parseNameStatus(names.stdout) : { files: [], total: 0 };
+    return {
+      sha: hash, parents: parent, from, author, email, time: Number(time) * 1000, message: message.join("\x1f").trim(),
+      files: listed.files.map((f) => ({ ...f, add: 0, del: 0, ...stats[f.path] })), total: listed.total,
+    };
+  }
+
+  /** One file's change in a commit as display lines. `full` keeps the whole file, not just the hunks. */
+  async function fileDiff(detail, file, on, root, { full = false } = {}) {
+    const r = await git(root, on, ["diff", full ? "-U100000" : "-U3", "--no-ext-diff", "--no-textconv", "--no-color", detail.from, detail.sha, "--", file.path]);
+    if (r.code !== 0) throw new Error(r.stderr);
+    const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
+    if (first < 0) return { lines: [file.binary ? "Binary file changed" : "No text diff available"] };
+    const lines = all.slice(first), limit = full ? FULL_FILE_LINES : DIFF_LINES;
+    return { lines: lines.slice(0, limit).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line), cut: lines.length > limit };
+  }
+
+  return { read, diff, repo, aheadBehind, logPage, commit, fileDiff, search };
 }

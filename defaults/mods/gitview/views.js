@@ -31,7 +31,9 @@ function header(view, t, cx) {
     .bg(view.mode === mode ? t.selected : t.background).text_color(view.mode === mode ? t.foreground : t.muted)
     .hover((s) => s.bg(t.hover)).on_click((_e, cx) => view.setMode(mode, cx)).child(label);
   return h_flex().h(42).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border)
-    .child(tab("changes", "Changes")).child(tab("branches", "Branches"));
+    .child(tab("changes", "Changes")).child(tab("branches", "Branches"))
+    .child(div().flex_1())
+    .child(div().id("gitview-graph").px(10).py(4).rounded(6).text_size(12).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover)).on_click(() => view.openGraph()).child("Graph ↗"));
 }
 
 function summary(view, t) {
@@ -68,7 +70,7 @@ function listRow(view, t, item) {
   const on = view.open?.section === section && view.open.path === file.path;
   const color = file.status === "A" ? t.ansi2 : file.status === "M" ? t.blocked : t.ansi1;
   return h_flex().id(`gitview-${section}-${file.path}`).w_full().h(ROW).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer()
-    .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => view.pick(section, file.path, cx))
+    .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
     .child(div().w(14).text_size(11).text_color(color).child(file.status))
     .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
     .when(file.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${file.add}`)))
@@ -88,7 +90,8 @@ function changes(view, t) {
     .child(summary(view, t))
     .when(Boolean(snap), (el) => el
       .child(div().flex_1().min_h(60).max_h(items.length * ROW + 12).relative().border_b(1).border_color(t.border)
-        .child(v_virtual_list("gitview-files", items.length, ROW, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => listRow(view, t, item))).size_full().p(6))
+        .child(v_virtual_list("gitview-files", items.length, ROW, (i) => items[i].file ? `${items[i].section}\0${items[i].file.path}` : `row:${i}`, (range) => items.slice(range.start, range.end).map((item) => listRow(view, t, item)))
+          .on_item_click((key, cx) => { const [section, path] = key.split("\0"); if (path) view.pick(section, path, cx); }).size_full().p(6))
         .child(Scrollbar.vertical("gitview-files").viewport_from_layout().absolute().inset_0())
         .when(!items.length, (e) => e.child(div().absolute().p(12).text_color(t.dim).child("Nothing changed or unpushed"))))
       .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)

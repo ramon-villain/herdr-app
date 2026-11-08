@@ -97,6 +97,8 @@ export default class Tabs extends View {
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(enabled.includes("gitview"), el => el.child(panelButton("gitview", "Git", "mods/workspace-chrome/branch.svg")))
+      .when(enabled.includes("gitview"), el => el.child(h_flex().id("git-graph").h(26).px(8).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome).text_color(t.muted)
+        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => run("tab.new", { mod: "gitview", props: { graph: true }, name: "Git graph" })).child("Graph")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

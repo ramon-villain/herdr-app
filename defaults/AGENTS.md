@@ -840,6 +840,14 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   Branches (one row per open space: task, branch, latest commit, commits since
   the default branch, pushed or not, the PR link from `gh`, read once per branch tip).
   Both refresh when a space gets focus and every 10 seconds.
+  The same mod fills a whole tab as a read-only Git graph (the tab bar's Graph button, or "Git graph"
+  in the command palette: `tab.new {mod: "gitview", props: {graph: true}}`): a branch tree on the left
+  (local branches grouped by prefix with ahead/behind the default branch, remote, worktrees with their
+  uncommitted count, stashes, tags; right-click a branch for Hide and Solo), the commit graph in the middle
+  (lanes from `lanes.js`, a row for uncommitted changes, search over message, author, sha and file), and the
+  selected commit on the right with its files and a diff that replaces the graph. It reads the focused
+  space's repo with the same reader (`git.js`: status, rev-parse, rev-list, log, diff, for-each-ref,
+  stash list, worktree list; never fetch, checkout or write); a worktree picker switches between that repo's checkouts.
 
 ### Check before you finish
 
