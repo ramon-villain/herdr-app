@@ -983,3 +983,45 @@ test("marking 575 branches over 5000 commits is one cheap pass", async () => {
   expect(markedNames(g)).toEqual(["b/0:contains"]);
   expect(performance.now() - start).toBeLessThan(100);
 });
+
+// ---- solo
+
+/** A click's cx stops working once its handler returns; a task's cx keeps working. */
+function soloClick() {
+  const state = { open: true, spawned: 0 };
+  const task: any = { notify() {}, spawn(work: any) { work(task); } };
+  const click: any = {
+    state,
+    notify() { if (!state.open) throw new Error("the click's cx is gone"); },
+    spawn(work: any) { state.spawned++; work(task); },
+  };
+  return click;
+}
+const settleLog = async (g: any) => { for (let i = 0; i < 50 && (g.loading || !g.commits.length); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+test("soloing a branch lists its commits even though the click's cx is gone when the log returns", async () => {
+  const log = [{ sha: "a1", parents: [], subject: "x", author: "", time: 1, body: "" }];
+  const g: any = new Graph({ logPage: async () => { await new Promise((r) => setTimeout(r, 1)); return log; } }, () => ({ dir: null, on: null }), { scroll_to_item() {} });
+  g.info = { root: "/r", heads: [{ name: "a", sha: "a1" }], remotes: [], tags: [], stashes: [], worktrees: [], bySha: new Map() };
+  const click = soloClick();
+  g.solo("refs/heads/a", click);
+  click.state.open = false;
+  await settleLog(g);
+  expect(g.error).toBeNull();
+  expect(g.commits.map((c: any) => c.sha)).toEqual(["a1"]);
+});
+
+test("soloing several branches walks all of them, and Stop Soloing brings the rest back", async () => {
+  const seen: any[] = [];
+  const g: any = new Graph({ logPage: async (_r: string, _s: number, _o: any, _n: number, refs: any) => { seen.push(refs); return []; } }, () => ({ dir: null, on: null }), { scroll_to_item() {} });
+  g.info = { root: "/r", heads: [{ name: "a", sha: "a1" }, { name: "b", sha: "b1" }], remotes: [], tags: [], stashes: [], worktrees: [], bySha: new Map() };
+  const click = soloClick();
+  g.solo("refs/heads/a", click); await new Promise((r) => setTimeout(r, 5));
+  g.solo("refs/heads/b", click); await new Promise((r) => setTimeout(r, 5));
+  expect(seen.at(-1).solo).toEqual(["refs/heads/a", "refs/heads/b"]);
+  expect(g.visibleRefs()).toEqual({ shown: 2, all: 2 });
+  g.solo("refs/heads/a", click); await new Promise((r) => setTimeout(r, 5));
+  expect(seen.at(-1).solo).toEqual(["refs/heads/b"]);
+  g.stopSolo(click); await new Promise((r) => setTimeout(r, 5));
+  expect(seen.at(-1).solo).toEqual([]);
+});
