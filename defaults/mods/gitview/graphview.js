@@ -160,6 +160,16 @@ function sendBar(graph, view, t) {
     .child(pill(t, "graph-send-close", "✕", false, (_e, cx) => { graph.pick = null; cx.notify(); }));
 }
 
+/** The box over the bottom of the tab that a right-click on a ref or commit opens: what it is about, a message, and the send. */
+function askBar(graph, view, t) {
+  const { ask } = graph;
+  return h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12)
+    .child(div().flex_none().max_w(200).truncate().text_size(11).text_color(t.muted).child(ask.type === "commit" ? ask.name : `${ask.type === "tag" ? "tag" : "branch"} ${ask.name}`))
+    .child(Input.new(view.askInput).flex_1().min_w(0).h(24).px(6).rounded(4).bg(t.background).text_size(12).text_color(t.foreground))
+    .child(pill(t, "graph-ask-send", view.sending ? "Sending…" : "Send to firstmate", false, (_e, cx) => view.sendAsk(cx)))
+    .child(pill(t, "graph-ask-close", "✕", false, (_e, cx) => { graph.ask = null; cx.notify(); }));
+}
+
 function diffPane(graph, view, t, cx) {
   const hits = graph.findHits(), at = Math.min(graph.find.at, hits.length - 1), byRow = new Map();
   hits.forEach((h, i) => byRow.set(h.row, [...(byRow.get(h.row) ?? []), { from: h.from, to: h.to, current: i === at }]));
@@ -322,5 +332,6 @@ export function renderGraphTab(graph, view, t) {
       .child(graph.file ? diffPane(graph, view, t) : graphList(graph, view, t))
       .when(graph.panelOpen, (e) => e.child(detailPane(graph, view, t, items))))
     .when(graph.picking && Boolean(graph.info), (e) => e.child(worktreeMenu(graph, t)))
-    .when(graph.pickingRepo, (e) => e.child(repoMenu(graph, t)));
+    .when(graph.pickingRepo, (e) => e.child(repoMenu(graph, t)))
+    .when(Boolean(graph.ask), (e) => e.child(askBar(graph, view, t)));
 }

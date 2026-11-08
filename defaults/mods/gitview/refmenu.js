@@ -35,15 +35,22 @@ export function prsByBranch(...lists) {
 
 /**
  * The rows of the menu for one ref, in order; `null` is a divider.
- * @param {{ type: "branch" | "remote" | "tag", name: string, sha?: string, hidden?: boolean, solo?: boolean, pr?: { number: number, state: string } | null }} ref
+ * @param {{ type: "branch" | "remote" | "tag" | "commit", name: string, sha?: string, hidden?: boolean, solo?: boolean, pr?: { number: number, state: string } | null }} ref
  * @param {string | null} web the repository's page on GitHub, when origin is there
  */
 export function menuEntries(ref, web) {
   const isTag = ref.type === "tag", rows = [];
+  if (ref.type === "commit") {
+    rows.push({ id: "copySha", label: "Copy commit sha" });
+    if (web) rows.push({ id: "copyLink", label: "Copy link to commit on origin" });
+    rows.push({ id: "askFm", label: "Ask firstmate..." });
+    return rows;
+  }
   rows.push({ id: "solo", label: ref.solo ? "Unsolo" : "Solo" }, { id: "hide", label: ref.hidden ? "Show" : "Hide" }, null);
   rows.push({ id: "copyName", label: isTag ? "Copy tag name" : "Copy branch name" });
   if (ref.sha) rows.push({ id: "copySha", label: "Copy commit sha" });
   if (ref.sha && web) rows.push({ id: "copyLink", label: "Copy link to commit on origin" });
+  rows.push({ id: "askFm", label: "Ask firstmate..." });
   if (!isTag && web) {
     const pr = ref.pr, open = pr?.state === "OPEN";
     const tail = [];

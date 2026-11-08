@@ -73,13 +73,13 @@ const labels = (rows: any[]) => rows.map((r) => (r ? r.label : "-"));
 
 test("a branch without a pull request offers Push and create PR beside the copies, solo and hide", () => {
   const rows = menuEntries({ type: "branch", name: "feat/x", sha: "a".repeat(40), pr: null }, "https://github.com/o/r");
-  expect(labels(rows)).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "-", "Push and create PR"]);
+  expect(labels(rows)).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Push and create PR"]);
   expect(rows.map((r) => r?.id)).toContain("pushPr");
 });
 
 test("a branch with an open pull request offers to open it and nothing to create", () => {
   const rows = menuEntries({ type: "branch", name: "x", sha: "s", pr: { number: 12, state: "OPEN" }, solo: true, hidden: true }, "https://github.com/o/r");
-  expect(labels(rows)).toEqual(["Unsolo", "Show", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "-", "Open PR #12"]);
+  expect(labels(rows)).toEqual(["Unsolo", "Show", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Open PR #12"]);
 });
 
 test("a closed pull request can be opened or replaced, a merged one only opened", () => {
@@ -92,12 +92,12 @@ test("a remote branch is already pushed, so it only creates the PR; a tag has no
   const web = "https://github.com/o/r";
   expect(labels(menuEntries({ type: "remote", name: "origin/x", sha: "s", pr: null }, web)).slice(-1)).toEqual(["Create PR"]);
   const tag = menuEntries({ type: "tag", name: "v1", sha: "s" }, web);
-  expect(labels(tag)).toEqual(["Solo", "Hide", "-", "Copy tag name", "Copy commit sha", "Copy link to commit on origin"]);
+  expect(labels(tag)).toEqual(["Solo", "Hide", "-", "Copy tag name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate..."]);
 });
 
 test("without a GitHub origin the menu has no link or PR rows, and without a sha no sha rows", () => {
-  expect(labels(menuEntries({ type: "branch", name: "x", sha: "s", pr: null }, null))).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha"]);
-  expect(labels(menuEntries({ type: "branch", name: "x" }, "https://github.com/o/r")).slice(3)).toEqual(["Copy branch name", "-", "Push and create PR"]);
+  expect(labels(menuEntries({ type: "branch", name: "x", sha: "s", pr: null }, null))).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Ask firstmate..."]);
+  expect(labels(menuEntries({ type: "branch", name: "x" }, "https://github.com/o/r")).slice(3)).toEqual(["Copy branch name", "Ask firstmate...", "-", "Push and create PR"]);
 });
 
 test("the popup keys move over the actions and wrap, Enter returns the action, Esc closes", () => {
@@ -107,7 +107,7 @@ test("the popup keys move over the actions and wrap, Enter returns the action, E
   expect(state.at).toBe(1);
   expect(menuKey(state, "enter", menu)).toMatchObject({ id: "hide" });
   menuKey(state, "up", menu); menuKey(state, "up", menu);
-  expect(state.at).toBe(3);
+  expect(state.at).toBe(4);
   expect(menuKey(state, "escape", menu)).toBe("close");
   expect(menuKey(state, "x", menu)).toBe(false);
   expect(menuHeight(menu)).toBeGreaterThan(menuHeight({ web: null, refs: [{ type: "tag", name: "t" }] }) - 1);
@@ -179,10 +179,24 @@ test("the menu opens for a left-column branch with its state, and for a commit r
   expect(g.menuLeft("section:local")).toBeNull();
   expect(g.menuLeft("missing")).toBeNull();
   g.info.bySha = new Map([["s1", { heads: ["a", "b"], remotes: ["origin/a"], tags: ["v1"] }]]);
-  expect(g.menuRow("s1").refs.map((r: any) => r.name)).toEqual(["a", "b"]);
+  expect(g.menuRow("s1").refs.map((r: any) => r.name)).toEqual(["a", "b", "commit s1"]);
   expect(g.menuRow("b".repeat(40))).toBeNull();
   g.show = { remotes: true, tags: true };
-  expect(g.menuRow("s1").refs.map((r: any) => [r.type, r.name, r.solo])).toEqual([["branch", "a", false], ["branch", "b", true], ["remote", "origin/a", false], ["tag", "v1", false]]);
+  expect(g.menuRow("s1").refs.map((r: any) => [r.type, r.name, r.solo])).toEqual([["branch", "a", false], ["branch", "b", true], ["remote", "origin/a", false], ["tag", "v1", false], ["commit", "commit s1", false]]);
+});
+
+test("Ask firstmate on a branch or a commit files a note with the repo, the ref and the sha, and nothing is sent by building it", () => {
+  const g = graphWith({});
+  g.web = "https://github.com/o/r";
+  g.commits = [{ sha: "a".repeat(40), subject: "fix: the thing" }]; g.index.set("a".repeat(40), 0);
+  expect(g.askNote("x")).toBeNull();
+  g.askAbout({ type: "branch", name: "feat/x", sha: "a".repeat(40) });
+  expect(g.askNote("why is this slow?")).toBe([
+    "[herdr] ask", "why is this slow?", "", "Repo: o/r (/r)", "Branch: feat/x", "Tip: aaaaaaaaaaa fix: the thing",
+  ].join("\n"));
+  g.askAbout({ type: "commit", name: "commit aaaaaaa", sha: "a".repeat(40) });
+  expect(g.askNote("")).toBe(["[herdr] ask", "Look at this from the Herdr Git view.", "", "Repo: o/r (/r)", "Commit: aaaaaaaaaaa fix: the thing"].join("\n"));
+  expect(labels(menuEntries({ type: "commit", name: "c", sha: "s" }, "https://github.com/o/r"))).toEqual(["Copy commit sha", "Copy link to commit on origin", "Ask firstmate..."]);
 });
 
 // ---- push and create PR: only on a click, through a fake git
