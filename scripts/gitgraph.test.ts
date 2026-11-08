@@ -661,7 +661,7 @@ test("the file rows are built once per commit and layout", async () => {
 test("the poll reloads when the probe changes and otherwise only refreshes the uncommitted files", async () => {
   let signature: string | null = "a";
   const reloads: string[] = [];
-  const g: any = new Graph({ probe: async () => signature, read: async () => ({ ok: true, uncommittedTotal: 0, uncommitted: [] }) }, () => ({ dir: "/r", on: null }), {});
+  const g: any = new Graph({ probe: async () => signature, pullRequests: async () => new Map(), read: async () => ({ ok: true, uncommittedTotal: 0, uncommitted: [] }) }, () => ({ dir: "/r", on: null }), {});
   g.info = { root: "/r" }; g.signature = "a"; g.worktree = "/r";
   g.load = async () => { reloads.push("load"); };
   await g.poll(cx);

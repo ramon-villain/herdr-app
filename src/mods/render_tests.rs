@@ -477,11 +477,39 @@ fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_grap
     }
     assert!(!tree.contains("\"graph-rows\""), "the graph stays under the diff: {tree}");
     assert!(!tree.contains("graph-find-next"), "the find bar stays shut until cmd+f: {tree}");
+    assert!(!tree.contains("graph-send-pick"), "nothing to send before lines are picked: {tree}");
     let found = format!("{diff} g.openFind(); g.setFind('const', {{ scroll_to_item() {{}} }});");
     let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&found)).unwrap();
     for want in ["graph-find-next", "graph-find-prev", "graph-find-close", "1 of 2"] {
         assert!(tree.contains(want), "find bar lacks {want}: {tree}");
     }
+    let picked = format!("{diff} g.startPick(1, false); g.movePick(2); g.endPick();");
+    let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&picked)).unwrap();
+    for want in ["graph-send-pick", "Send to firstmate", "2 lines", "graph-send-close"] {
+        assert!(tree.contains(want), "send bar lacks {want}: {tree}");
+    }
+}
+
+#[gpui::test]
+fn gitview_branch_menu_popup_lists_what_can_be_done_with_the_ref(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let sha = "a".repeat(40);
+    let web = "https://github.com/o/r";
+    let menu = |refs: Value| json!({"menu": {"refs": refs, "web": web, "base": "master", "root": "/fixture/project", "on": null}, "tab": "t1", "overlay": "o1"});
+    let plain = json!([{"type": "branch", "name": "feat/x", "ref": "refs/heads/feat/x", "sha": sha, "hidden": false, "solo": false, "pr": null}]);
+    let tree = describe(cx, &staged, "mods/gitview", true, menu(plain), updates("current", "current"), None).unwrap();
+    for want in ["feat/x", "Solo", "Hide", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Push and create PR", "gv-menu-pushPr"] {
+        assert!(tree.contains(want), "branch menu lacks {want}: {tree}");
+    }
+    assert!(!tree.contains("Open PR"), "no pull request to open: {tree}");
+    let opened = json!([{"type": "branch", "name": "feat/y", "ref": "refs/heads/feat/y", "sha": sha, "hidden": true, "solo": true, "pr": {"number": 12, "state": "OPEN", "url": "https://github.com/o/r/pull/12"}},
+        {"type": "tag", "name": "v1", "ref": "refs/tags/v1", "sha": sha, "hidden": false, "solo": false, "pr": null}]);
+    let tree = describe(cx, &staged, "mods/gitview", true, menu(opened), updates("current", "current"), None).unwrap();
+    for want in ["feat/y", "v1", "Unsolo", "Show", "Open PR #12", "gv-ref-0", "gv-ref-1"] {
+        assert!(tree.contains(want), "two-ref menu lacks {want}: {tree}");
+    }
+    assert!(!tree.contains("Push and create PR"), "an open pull request needs no new one: {tree}");
 }
 
 /// A mod's localStorage write lands on the executor; one that lands after the
