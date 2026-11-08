@@ -656,21 +656,13 @@ export class Graph {
 
   // ---- picking lines of the open file to send to firstmate
 
-  /** Starts a pick at row `i`, or widens the current one up to it with shift. A click on the only picked row clears it. */
-  startPick(i, extend) {
+  /** A click on row `i` starts a pick there, or with shift widens the current one up to it. A click on the only picked row clears it. */
+  clickPick(i, extend) {
     const p = this.pick;
-    if (extend && p) this.pick = { anchor: p.anchor, from: Math.min(p.anchor, i), to: Math.max(p.anchor, i), held: true };
-    else if (p && !p.held && p.from === i && p.to === i) this.pick = null;
-    else this.pick = { anchor: i, from: i, to: i, held: true };
+    if (extend && p) this.pick = { anchor: p.anchor, from: Math.min(p.anchor, i), to: Math.max(p.anchor, i) };
+    else if (p && p.from === i && p.to === i) this.pick = null;
+    else this.pick = { anchor: i, from: i, to: i };
   }
-
-  /** The pointer moving over row `i` while the button is down. */
-  movePick(i) {
-    const p = this.pick;
-    if (p?.held) this.pick = { ...p, from: Math.min(p.anchor, i), to: Math.max(p.anchor, i) };
-  }
-
-  endPick() { if (this.pick?.held) this.pick = { ...this.pick, held: false }; }
 
   picked(i) { return Boolean(this.pick) && i >= this.pick.from && i <= this.pick.to; }
 
