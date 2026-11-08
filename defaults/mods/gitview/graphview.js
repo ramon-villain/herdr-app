@@ -104,7 +104,7 @@ function graphList(graph, view, t) {
         const rows = [];
         for (let k = range.start; k < range.end; k++) rows.push(graph.at(k) < 0 ? wipRow(graph, t, gw) : commitRow(graph, graph.at(k), t, gw, headSha));
         return rows;
-      }).track_scroll(view.graphScroll).on_item_click((sha, cx) => graph.select(sha, cx)).size_full())
+      }).track_scroll(view.graphScroll).on_item_click((sha, cx) => graph.select(sha, cx)).on_item_secondary_click((sha) => view.openMenu(graph.menuRow(sha))).size_full())
       .child(Scrollbar.vertical("graph-rows").absolute().inset_0())
       .when(!graph.commits.length, (e) => e.child(div().absolute().p(14).text_color(t.dim).child(graph.error ?? (graph.loading ? "Loading…" : "No commits"))))
       .when(Boolean(graph.status), (e) => e.child(div().absolute().bottom(8).right(14).px(8).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child(graph.status))));
@@ -112,19 +112,27 @@ function graphList(graph, view, t) {
 
 // ---- the diff that replaces the graph
 
-function diffLine(r, ext, finds = []) {
+/** Lets a press on the line pick it for firstmate, and the pointer dragging over it widen the pick. */
+function pickable(el, graph, i, t) {
+  return el.id(`graph-line-${i}`)
+    .when(graph.picked(i), (e) => e.bg(`${t.accent}38`).border_l(2).border_color(t.accent))
+    .on_mouse_down("left", (e, cx) => { graph.startPick(i, e.modifiers.shift); cx.notify(); })
+    .on_mouse_move((_e, cx) => { if (graph.pick?.held && (graph.pick.from !== i || graph.pick.to !== i)) { graph.movePick(i); cx.notify(); } });
+}
+
+function diffLine(r, ext, finds = [], pick = (el) => el) {
   const p = diffPalette;
-  if (r.kind === "@") return h_flex().w_full().h(ROW - 4).flex_none().items_center().px(12).bg(p.hunk.ground).text_color(p.hunk.text).child(div().truncate().child(r.text));
+  if (r.kind === "@") return pick(h_flex().w_full().h(ROW - 4).flex_none().items_center().px(12).bg(p.hunk.ground).text_color(p.hunk.text).child(div().truncate().child(r.text)));
   const add = r.kind === "+", del = r.kind === "-", side = add ? p.added : p.removed;
   const gutter = (n) => div().w(38).flex_none().text_right().pr(6).text_color(add || del ? p.text : p.lineNumber).when(add || del, (e) => e.bg(side.gutter)).child(n === undefined ? "" : String(n));
-  return h_flex().w_full().h(ROW - 4).flex_none().items_center()
+  return pick(h_flex().w_full().h(ROW - 4).flex_none().items_center()
     .when(add || del, (e) => e.bg(side.line))
     .child(gutter(r.old)).child(gutter(r.next))
     .child(div().w(14).flex_none().text_color(add || del ? side.sign : p.lineNumber).child(add ? "+" : del ? "−" : ""))
     .child(h_flex().flex_1().min_w(0).whitespace_nowrap().overflow_hidden()
       .children(markFinds(r.kind === "" ? [{ text: r.text, kind: "", hl: false }] : lineSegments(r.text, ext, r.mark), finds).map((s) =>
         div().flex_none().text_color(s.find === 2 ? p.find.currentText : s.hl ? p.wordText : p.syntax[s.kind])
-          .when(s.hl, (e) => e.bg(side.word)).when(s.find > 0, (e) => e.bg(s.find === 2 ? p.find.current : p.find.match)).child(s.text))));
+          .when(s.hl, (e) => e.bg(side.word)).when(s.find > 0, (e) => e.bg(s.find === 2 ? p.find.current : p.find.match)).child(s.text)))));
 }
 
 function pill(t, id, text, on, onClick) {
@@ -141,6 +149,16 @@ function findBar(graph, view, t, total) {
     .child(pill(t, "graph-find-prev", "↑", false, () => view.findStep(-1)))
     .child(pill(t, "graph-find-next", "↓", false, () => view.findStep(1)))
     .child(pill(t, "graph-find-close", "✕", false, (_e, cx) => view.findClose(cx)));
+}
+
+/** The bar over the bottom of the file pane while lines are picked: what is picked, an optional message, and the send. */
+function sendBar(graph, view, t) {
+  const n = graph.pick.to - graph.pick.from + 1;
+  return h_flex().absolute().bottom(8).left(12).right(12).h(36).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12)
+    .child(div().flex_none().text_size(11).text_color(t.muted).child(`${n} ${n === 1 ? "line" : "lines"}`))
+    .child(Input.new(view.noteInput).flex_1().min_w(0).h(24).px(6).rounded(4).bg(t.background).text_size(12).text_color(t.foreground))
+    .child(pill(t, "graph-send-pick", view.sending ? "Sending…" : "Send to firstmate", false, (_e, cx) => view.sendPick(cx)))
+    .child(pill(t, "graph-send-close", "✕", false, (_e, cx) => { graph.pick = null; cx.notify(); }));
 }
 
 function diffPane(graph, view, t, cx) {
@@ -160,13 +178,14 @@ function diffPane(graph, view, t, cx) {
       .child(h_flex().w(80).justify_end()
         .child(pill(t, "graph-hunk-prev", "↑", false, () => graph.step(-1, view.diffScroll)))
         .child(pill(t, "graph-hunk-next", "↓", false, () => graph.step(1, view.diffScroll)))))
-    .child(div().flex_1().min_h(0).relative().text_size(11).bg(diffPalette.ground)
-      .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r, k) => diffLine(r, ext, byRow.get(range.start + k))))
+    .child(div().flex_1().min_h(0).relative().text_size(11).bg(diffPalette.ground).on_mouse_up("left", (_e, cx) => { graph.endPick(); cx.notify(); })
+      .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r, k) => diffLine(r, ext, byRow.get(range.start + k), (el) => pickable(el, graph, range.start + k, t))))
         .track_scroll(view.diffScroll).size_full())
       .child(Scrollbar.vertical("graph-diff").absolute().inset_0())
       .when(graph.find.open, (e) => e.child(findBar(graph, view, t, hits.length)))
+      .when(Boolean(graph.pick), (e) => e.child(sendBar(graph, view, t)))
       .when(!graph.view, (e) => e.child(div().absolute().p(14).text_color(t.dim).child("Loading…")))
-      .when(Boolean(graph.view?.cut), (e) => e.child(div().absolute().bottom(8).right(14).px(8).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child("Long file: showing the first lines"))));
+      .when(Boolean(graph.view?.cut), (e) => e.child(div().absolute().bottom(graph.pick ? 52 : 8).right(14).px(8).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child("Long file: showing the first lines"))));
 }
 
 // ---- the branch tree
@@ -203,15 +222,6 @@ function leftRow(item, t, graph) {
     .when(item.solo, (e) => e.child(div().text_size(10).text_color(t.accent).flex_none().child("solo")));
 }
 
-function menuBar(graph, t) {
-  const item = graph.menu, ref = graph.keyRef(item);
-  return h_flex().flex_none().mx(10).mb(6).px(8).h(30).gap(6).items_center().rounded(6).bg(t.raised).text_size(11)
-    .child(div().flex_1().min_w(0).truncate().child(item.name))
-    .child(pill(t, "graph-menu-hide", item.hidden ? "Show" : "Hide", false, (_e, cx) => graph.hide(ref, cx)))
-    .child(pill(t, "graph-menu-solo", item.solo ? "Unsolo" : "Solo", false, (_e, cx) => graph.solo(ref, cx)))
-    .child(pill(t, "graph-menu-close", "✕", false, (_e, cx) => { graph.menu = null; cx.notify(); }));
-}
-
 function leftPane(graph, view, t) {
   const items = graph.left(), info = graph.info;
   const shown = graph.commits.length;
@@ -222,10 +232,9 @@ function leftPane(graph, view, t) {
         .child(pill(t, "graph-show-remote", "Remote", graph.show.remotes, (_e, cx) => graph.toggleShow("remotes", cx)))
         .child(pill(t, "graph-show-tags", "Tags", graph.show.tags, (_e, cx) => graph.toggleShow("tags", cx))))
       .child(Input.new(view.input).h(28).px(8).rounded(6).border_1().border_color(t.border).bg(t.background).text_size(12).text_color(t.foreground)))
-    .when(Boolean(graph.menu), (e) => e.child(menuBar(graph, t)))
     .child(div().flex_1().min_h(0).relative()
       .child(v_virtual_list("graph-left", items.length, ROW, (i) => items[i].key, (range) => items.slice(range.start, range.end).map((item) => leftRow(item, t, graph)))
-        .on_item_click((key, cx) => graph.clickLeft(key, cx)).on_item_secondary_click((key, _e, cx) => graph.menuLeft(key, cx)).size_full())
+        .on_item_click((key, cx) => graph.clickLeft(key, cx)).on_item_secondary_click((key) => view.openMenu(graph.menuLeft(key))).size_full())
       .child(Scrollbar.vertical("graph-left").absolute().inset_0())
       .when(!info, (e) => e.child(div().absolute().p(12).text_color(t.dim).child(graph.error ?? "Loading…"))));
 }

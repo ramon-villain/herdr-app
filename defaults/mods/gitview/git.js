@@ -1,6 +1,7 @@
 // The one place this mod talks to git. Both views read a folder through createReader(), so they
 // always agree and neither runs its own git. Everything here only reads: no fetch, checkout, stash,
 // reset or write, because these folders belong to people and agents working in them.
+import { prsByBranch } from "./refmenu.js";
 
 // No optional locks, no fsmonitor cookie, no index refresh: a read must write nothing under .git,
 // or a folder watch would see it and every refresh would start the next one.
@@ -390,11 +391,28 @@ export function createReader({ exec, readTextFile }) {
     return refs.code === 0 && tags.code === 0 ? [refs, tags, stashes, worktrees, head].map((r) => r.stdout).join("\0") : null;
   }
 
+  /** The URL of origin, or null. */
+  async function remoteUrl(root, on) {
+    const r = await git(root, on, ["config", "--get", "remote.origin.url"]);
+    return r.code === 0 ? r.stdout.trim() || null : null;
+  }
+
+  /**
+   * The pull request of each branch, from `gh`: every open one, and the latest of any state. gh is not git but asks about the
+   * same folder, and the network, so callers keep the answer and never wait on it. Rejects when gh cannot answer at all.
+   */
+  async function pullRequests(root, on) {
+    const list = (state, limit) => exec("gh", ["pr", "list", "--state", state, "--limit", String(limit), "--json", "headRefName,number,url,state,isDraft"], { cwd: root, on, timeout: 30000 });
+    const answers = (await Promise.all([list("open", 300), list("all", 150)])).filter((r) => r.code === 0);
+    if (!answers.length) throw new Error("gh pr list failed");
+    return prsByBranch(...answers.map((r) => JSON.parse(r.stdout || "[]")));
+  }
+
   /** The folders directly under `dir` that hold a git checkout, by name. */
   async function clones(dir, on) {
     const r = await exec("sh", ["-c", 'for d in "$1"/*/; do [ -e "${d}.git" ] && basename "$d"; done; true', "sh", dir], { on, timeout: 5000 });
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
   }
 
-  return { read, diff, diffBatch, repo, probe, aheadBehind, logPage, commit, fileDiff, search, clones };
+  return { read, diff, diffBatch, repo, probe, aheadBehind, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests };
 }

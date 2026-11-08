@@ -2,6 +2,8 @@
 import { layoutLanes } from "./lanes.js";
 import { agoLabel, branchTree, fileTree, hunkStarts, markWords, stepHunk, findMatches, stepMatch } from "./model.js";
 import { diffRows } from "./git.js";
+import { branchOf, webUrl } from "./refmenu.js";
+import { noteBody } from "./note.js";
 
 // Every page walks the whole history to sort it, whatever its size, so the first page is small for a quick first paint and later ones are big.
 const FIRST_PAGE = 500;
@@ -56,7 +58,8 @@ export class Graph {
     this.file = null; this.view = null; this.mode = "diff"; this.hunkAt = -1;
     this.find = { open: false, query: "", at: -1 }; this.findCache = null;
     this.filter = ""; this.collapsed = new Set(); this.open = { ...OPEN };
-    this.hidden = new Set(); this.soloed = new Set(); this.menu = null;
+    this.hidden = new Set(); this.soloed = new Set(); this.web = null;
+    this.prs = { root: null, byBranch: new Map(), tried: 0, loading: false }; this.pick = null;
     this.query = ""; this.matches = null; this.onlyMatches = false; this.searching = false; this.hitAt = -1; this.hitCache = null; this.searchRun = 0;
     this.fileMode = "path"; this.wantMore = false; this.signature = null; this.leftCache = null;
     this.run = 0; this.picking = false;
@@ -103,6 +106,8 @@ export class Graph {
       cx.notify();
       this.git.aheadBehind(info.root, info.base, this.on).then((ab) => { if (run === this.run) { this.ab = ab; this.leftCache = null; cx.notify(); } }).catch(() => null);
       this.loadWorktrees(run, cx);
+      this.loadWeb(info.root, run);
+      this.refreshPrs(cx);
       this.loadRepos().catch(() => null);
       this.loadWip(cx);
       await this.page(run, cx);
@@ -126,7 +131,24 @@ export class Graph {
     if (this.loading || !this.info) return;
     const signature = await this.git.probe(this.root, this.on);
     if (signature !== null && this.signature !== null && signature !== this.signature) { this.load(cx); return; }
+    this.refreshPrs(cx);
     await this.loadWip(cx);
+  }
+
+  // ---- origin and pull requests, for the branch menu
+
+  loadWeb(root, run) {
+    this.git.remoteUrl(root, this.on).then((url) => { if (run === this.run) this.web = webUrl(url); }).catch(() => null);
+  }
+
+  /** Asks gh for the repo's pull requests in the background, at most every two minutes (five when it failed); the menu shows what is here and never waits. */
+  refreshPrs(cx) {
+    const root = this.info?.root, prs = this.prs;
+    if (!root || prs.loading || (prs.root === root && Date.now() - prs.tried < 120000)) return;
+    prs.loading = true; prs.tried = Date.now();
+    this.git.pullRequests(root, this.on)
+      .then((byBranch) => { if (root === this.info?.root) { this.prs = { root, byBranch, tried: Date.now(), loading: false }; cx.notify(); } else prs.loading = false; })
+      .catch(() => { prs.root = root; prs.tried = Date.now() + 180000; prs.loading = false; });
   }
 
   async page(run, cx) {
@@ -250,7 +272,7 @@ export class Graph {
       if (space) saveRepo(space, path);
       this.worktree = null; this.info = null; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
       this.selected = null; this.detail = null; this.file = null; this.view = null; this.details.clear(); this.views.clear();
-      this.hidden.clear(); this.soloed.clear(); this.menu = null; this.ab = new Map(); this.wt = new Map(); this.signature = null;
+      this.hidden.clear(); this.soloed.clear(); this.web = null; this.pick = null; this.ab = new Map(); this.wt = new Map(); this.signature = null;
       this.reset();
       this.later(cx, (cx) => this.load(cx)).catch(() => null);
     }
@@ -422,7 +444,7 @@ export class Graph {
     const file = this.detail?.files.find((f) => f.path === path);
     if (!file) return;
     const { mode } = this, other = mode === "diff" ? "file" : "diff";
-    this.file = file; this.hunkAt = -1; this.view = this.cachedView(this.detail, file, mode);
+    this.file = file; this.hunkAt = -1; this.pick = null; this.view = this.cachedView(this.detail, file, mode);
     cx.notify();
     // The other view is one click away, so its read starts now.
     const warm = () => { if (this.file === file) { this.viewFor(this.detail, file, other).catch(() => null); this.prefetchWhole(); } };
@@ -442,13 +464,13 @@ export class Graph {
 
   setMode(mode, cx) {
     if (this.mode === mode || !this.file) return;
-    this.mode = mode; this.view = this.cachedView(this.detail, this.file, mode);
+    this.mode = mode; this.pick = null; this.view = this.cachedView(this.detail, this.file, mode);
     cx.notify();
     if (!this.view) this.later(cx, (cx) => this.loadView(cx)).catch(() => null);
     this.prefetchWhole();
   }
 
-  closeFile(cx) { this.file = null; this.view = null; this.find.open = false; cx.notify(); }
+  closeFile(cx) { this.file = null; this.view = null; this.pick = null; this.find.open = false; cx.notify(); }
 
   // ---- find in the open file
 
@@ -531,7 +553,7 @@ export class Graph {
   }
   showAll(cx) { this.hidden.clear(); this.soloed.clear(); this.refsChanged(cx); }
   refsChanged(cx) {
-    this.leftCache = null; this.menu = null;
+    this.leftCache = null;
     if (this.query.length >= 2) this.setQuery(this.query, cx);
     this.relog(cx);
   }
@@ -596,18 +618,75 @@ export class Graph {
   clickLeft(key, cx) {
     const item = this.leftMap?.get(key);
     if (!item) return;
-    this.menu = null;
     if (item.type === "section") this.toggleSection(item.id, cx);
     else if (item.type === "folder") this.toggleFolder(item.path, cx);
     else if (item.type === "worktree") this.pickWorktree(item.w.path, cx);
     else if (item.sha) this.reveal(item.sha, cx);
   }
 
-  /** Right-click on a branch, remote branch or tag opens the Hide and Solo bar. */
-  menuLeft(key, cx) {
+  // ---- the branch menu
+
+  /** The props of the menu popup for these refs (`{ type, name, sha }`), or null when none of them can be hidden or soloed. */
+  menuFor(refs) {
+    const listed = refs.filter((r) => this.keyRef(r)).map((r) => {
+      const ref = this.keyRef(r), pr = r.type === "tag" || this.prs.root !== this.info?.root ? null : this.prs.byBranch.get(branchOf(r)) ?? null;
+      return { type: r.type, name: r.name, sha: r.sha ?? null, ref, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), pr };
+    });
+    const base = this.info?.base?.replace(/^[^/]+\//, "") ?? null;
+    return listed.length ? { refs: listed, web: this.web, base, root: this.info?.root ?? null, on: this.on } : null;
+  }
+
+  /** Right-click on a branch, remote branch or tag in the left column. */
+  menuLeft(key) {
     const item = this.leftMap?.get(key);
-    this.menu = item && this.keyRef(item) ? item : null;
-    cx.notify();
+    return item ? this.menuFor([item]) : null;
+  }
+
+  /** Right-click on a commit row: the menu for the branch labels drawn on it. */
+  menuRow(sha) {
+    const at = this.info?.bySha.get(sha);
+    if (!at) return null;
+    const { remotes, tags } = this.show;
+    return this.menuFor([
+      ...at.heads.map((name) => ({ type: "branch", name, sha })),
+      ...(remotes ? at.remotes.map((name) => ({ type: "remote", name, sha })) : []),
+      ...(tags ? at.tags.map((name) => ({ type: "tag", name, sha })) : []),
+    ]);
+  }
+
+  // ---- picking lines of the open file to send to firstmate
+
+  /** Starts a pick at row `i`, or widens the current one up to it with shift. A click on the only picked row clears it. */
+  startPick(i, extend) {
+    const p = this.pick;
+    if (extend && p) this.pick = { anchor: p.anchor, from: Math.min(p.anchor, i), to: Math.max(p.anchor, i), held: true };
+    else if (p && !p.held && p.from === i && p.to === i) this.pick = null;
+    else this.pick = { anchor: i, from: i, to: i, held: true };
+  }
+
+  /** The pointer moving over row `i` while the button is down. */
+  movePick(i) {
+    const p = this.pick;
+    if (p?.held) this.pick = { ...p, from: Math.min(p.anchor, i), to: Math.max(p.anchor, i) };
+  }
+
+  endPick() { if (this.pick?.held) this.pick = { ...this.pick, held: false }; }
+
+  picked(i) { return Boolean(this.pick) && i >= this.pick.from && i <= this.pick.to; }
+
+  /** The picked rows of the open file. */
+  pickedRows() { return this.pick ? (this.view?.rows ?? []).slice(this.pick.from, this.pick.to + 1) : []; }
+
+  /** The captain note for the picked rows, or null when nothing is picked. */
+  pickNote(message) {
+    const rows = this.pickedRows(), detail = this.detail, info = this.info;
+    if (!rows.length || !this.file || !detail || !info) return null;
+    const wip = Boolean(detail.wip), root = info.root;
+    const branches = wip ? [info.worktrees.find((w) => w.path === this.worktree)?.branch].filter(Boolean) : info.bySha.get(detail.sha)?.heads ?? [];
+    return noteBody({
+      message, repo: { name: this.web ? this.web.replace("https://github.com/", "") : root.split("/").pop(), root },
+      commit: wip ? null : { sha: detail.sha, subject: detail.message.split("\n")[0] }, branches, file: this.file.path, mode: this.mode, rows,
+    });
   }
 }
 

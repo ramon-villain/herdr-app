@@ -1,16 +1,23 @@
 import { View } from "gpui-kit";
 import { InputState, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, window, theme, run, props as modProps } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, window, theme, run, props as modProps, openOverlay, closeOverlay, shared, setShared, notify } from "herdr";
 import { createReader, diffRows } from "./git.js";
 import { findKey } from "./model.js";
 import { renderPanel } from "./views.js";
 import { Graph } from "./graph.js";
 import { renderGraphTab } from "./graphview.js";
+import { createActions } from "./actions.js";
+import { compareUrl, branchOf, menuHeight, menuKey, MENU_WIDTH } from "./refmenu.js";
+import { renderRefMenu } from "./popup.js";
 
 const REFRESH_MS = 10000;
 const WORKERS = 3;
 // Where Firstmate keeps its clones; the repository dropdown of the Git graph lists them.
 const PROJECTS = "/Volumes/Coding/firstmate/projects";
+// Firstmate's note queue, the one the browser extension's notes end in.
+const INBOX = "/Volumes/Coding/firstmate/bin/fm-inbox.sh";
+// The branch menu popup hands what was picked to the Git graph tab that opened it through this shared value.
+const MENU_REQUEST = "gitview.menu";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(space, all) {
@@ -29,6 +36,7 @@ const key = () => JSON.stringify(location());
 export default class GitView extends View {
   init(_props, cx) {
     this.git = createReader({ exec, readTextFile });
+    if (modProps()?.menu) return this.initMenu(cx);
     if (modProps()?.graph) return this.initGraph(cx);
     this.mode = "changes";
     this.snap = null; this.error = null; this.rows = []; this.diff = []; this.diffWidth = 300;
@@ -50,6 +58,10 @@ export default class GitView extends View {
     this.search = InputState.new({ placeholder: "Search message, author, sha or file" });
     this.search.on("change", (_e, cx) => this.graph.setQuery(this.search.value(), cx));
     this.handle = cx.focus_handle();
+    this.id = Math.random().toString(36).slice(2);
+    this.lastRequest = shared(MENU_REQUEST)?.t;
+    this.noteInput = InputState.new({ placeholder: "Message for firstmate (optional)" });
+    this.noteInput.on("submit", (_e, cx) => this.sendPick(cx));
     this.findInput = InputState.new({ placeholder: "Find in file" });
     this.findInput.on("change", (_e, cx) => { this.graph.setFind(this.findInput.value(), this.diffScroll); cx.notify(); });
     // Enter may reach the field's submit, onKey, or both; onKey knows about shift, so submit waits a moment and steps only if onKey did not.
@@ -60,6 +72,80 @@ export default class GitView extends View {
     this.graph.load(cx);
     cx.timer.every(15000, (cx) => this.graph.poll(cx).catch(() => null));
     cx.timer.every(400, (cx) => { if (this.graph.wantMore) this.graph.more(cx); });
+  }
+
+  // ---- the branch menu: a popup opened on a right-click, which answers through shared state
+
+  openMenu(menu) {
+    if (menu) openOverlay({ mod: "gitview", kind: "popup", width: MENU_WIDTH, height: menuHeight(menu), props: { menu, tab: this.id } });
+  }
+
+  initMenu(cx) {
+    this.menuState = { at: 0, ref: 0 };
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+  }
+
+  chooseEntry(entry, cx) {
+    const { menu, tab, overlay } = modProps(), ref = menu.refs[this.menuState.ref];
+    closeOverlay(overlay);
+    setShared(MENU_REQUEST, { t: Date.now() + Math.random(), tab, action: entry.id, ref, web: menu.web, base: menu.base, root: menu.root, on: menu.on });
+    cx.notify();
+  }
+
+  renderMenu(cx) {
+    const { menu, overlay } = modProps(), state = this.menuState;
+    return renderRefMenu(state, menu, theme(), (entry, cx) => this.chooseEntry(entry, cx), (i, cx) => { state.ref = i; state.at = 0; cx.notify(); })
+      .id("gitview-menu").track_focus(this.handle).on_key_down((e, cx) => {
+        const hit = menuKey(state, e.key, menu);
+        if (hit === "close") closeOverlay(overlay);
+        else if (hit && hit !== true) this.chooseEntry(hit, cx);
+        else if (!hit) return;
+        cx.notify();
+      });
+  }
+
+  /** Runs what a popup picked, when this tab is the one that opened it. */
+  takeRequest(cx) {
+    const request = shared(MENU_REQUEST);
+    if (!request || request.t === this.lastRequest) return;
+    this.lastRequest = request.t;
+    if (request.tab === this.id) cx.spawn(async (task) => this.act(request, task));
+  }
+
+  actions(cx) {
+    return createActions({ exec, openLink: (url) => this.openLink(url), copy: (text) => cx.write_to_clipboard(text), notify, inbox: modProps()?.inbox ?? INBOX });
+  }
+
+  async act({ action, ref, web, base, root, on }, cx) {
+    const graph = this.graph, actions = this.actions(cx);
+    if (action === "solo") graph.solo(ref.ref, cx);
+    else if (action === "hide") graph.hide(ref.ref, cx);
+    else if (action === "copyName") actions.copyText(ref.name, ref.type === "tag" ? "tag name" : "branch name");
+    else if (action === "copySha") actions.copyText(ref.sha, "commit sha");
+    else if (action === "copyLink") actions.copyCommitLink(web, ref.sha);
+    else if (action === "openPr") this.openLink(ref.pr.url);
+    else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
+    else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base });
+    cx.notify();
+  }
+
+  // ---- send the picked lines of the open file to firstmate
+
+  sendPick(cx) {
+    const body = this.sending ? null : this.graph.pickNote(this.noteInput.value());
+    if (!body) return;
+    this.sending = true;
+    cx.notify();
+    cx.spawn(async (task) => {
+      try {
+        await this.actions(task).sendNote(`herdr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, body);
+        this.graph.pick = null;
+        this.noteInput.set_value("");
+      } catch (e) { notify({ title: "Could not send to firstmate", body: String(e.message ?? e), level: "error" }); }
+      this.sending = false;
+      task.notify();
+    });
   }
 
   findStep(direction) {
@@ -225,7 +311,11 @@ export default class GitView extends View {
   }
 
   render(cx) {
-    if (this.graph) return renderGraphTab(this.graph, this, theme());
+    if (this.menuState) return this.renderMenu(cx);
+    if (this.graph) {
+      this.takeRequest(cx);
+      return renderGraphTab(this.graph, this, theme());
+    }
     if (this.stamp() !== this.seen) this.refresh(cx);
     return renderPanel(this, theme(), cx);
   }
