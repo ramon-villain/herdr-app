@@ -112,12 +112,10 @@ function graphList(graph, view, t) {
 
 // ---- the diff that replaces the graph
 
-/** Lets a press on the line pick it for firstmate, and the pointer dragging over it widen the pick. */
+// The host refuses a handler registered on a row of a virtual list and draws the whole list blank, so a click on a line
+// is read by the list's on_item_click and the row only shows that it is picked.
 function pickable(el, graph, i, t) {
-  return el.id(`graph-line-${i}`)
-    .when(graph.picked(i), (e) => e.bg(`${t.accent}38`).border_l(2).border_color(t.accent))
-    .on_mouse_down("left", (e, cx) => { graph.startPick(i, e.modifiers.shift); cx.notify(); })
-    .on_mouse_move((_e, cx) => { if (graph.pick?.held && (graph.pick.from !== i || graph.pick.to !== i)) { graph.movePick(i); cx.notify(); } });
+  return el.when(graph.picked(i), (e) => e.bg(`${t.accent}38`).border_l(2).border_color(t.accent));
 }
 
 function diffLine(r, ext, finds = [], pick = (el) => el) {
@@ -178,9 +176,9 @@ function diffPane(graph, view, t, cx) {
       .child(h_flex().w(80).justify_end()
         .child(pill(t, "graph-hunk-prev", "↑", false, () => graph.step(-1, view.diffScroll)))
         .child(pill(t, "graph-hunk-next", "↓", false, () => graph.step(1, view.diffScroll)))))
-    .child(div().flex_1().min_h(0).relative().text_size(11).bg(diffPalette.ground).on_mouse_up("left", (_e, cx) => { graph.endPick(); cx.notify(); })
+    .child(div().flex_1().min_h(0).relative().text_size(11).bg(diffPalette.ground).on_mouse_down("left", (e) => { view.extendPick = e.modifiers.shift; })
       .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r, k) => diffLine(r, ext, byRow.get(range.start + k), (el) => pickable(el, graph, range.start + k, t))))
-        .track_scroll(view.diffScroll).size_full())
+        .track_scroll(view.diffScroll).on_item_click((key, cx) => { graph.clickPick(Number(key), view.extendPick); cx.notify(); }).size_full())
       .child(Scrollbar.vertical("graph-diff").absolute().inset_0())
       .when(graph.find.open, (e) => e.child(findBar(graph, view, t, hits.length)))
       .when(Boolean(graph.pick), (e) => e.child(sendBar(graph, view, t)))

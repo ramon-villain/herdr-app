@@ -446,23 +446,28 @@ fn gitview_draws_both_views_from_a_snapshot(cx: &mut TestAppContext) {
     }
 }
 
-#[gpui::test]
-fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_graph(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
-    let staged = Staged::new();
+/// The Git graph tab holding two commits, the first selected, with the two files of its detail.
+fn graph_state() -> String {
     let a = "a".repeat(40);
     let b = "b".repeat(40);
-    let state = format!(
+    format!(
         "const g = this.graph; g.error = null; g.worktree = '/fixture/project'; g.leftCache = null; \
          g.info = {{ ok: true, root: '/fixture/project', head: '{a}', base: 'origin/master', heads: [{{ name: 'feat/x', sha: '{a}' }}, {{ name: 'master', sha: '{b}' }}], remotes: [], tags: [], \
            bySha: new Map([['{a}', {{ heads: ['feat/x'], remotes: [], tags: ['v1'] }}]]), worktrees: [{{ path: '/fixture/project', sha: '{a}', branch: 'feat/x' }}], stashes: [] }}; \
          g.commits = [{{ sha: '{a}', parents: ['{b}'], author: 'Ramon Villain', time: Date.now(), subject: 'feat(charts): note a slow chart', body: 'it takes longer than 3 seconds', marker: '1 minute ago' }}, \
-                      {{ sha: '{b}', parents: [], author: 'Ramon Villain', time: Date.now(), subject: 'first' }}]; \
+                      {{ sha: '{b}', parents: [], author: 'Ramon Villain', time: Date.now(), subject: 'first', body: '' }}]; \
          g.rows = [{{ sha: '{a}', lane: 0, color: 0, top: false, merging: [], pass: [], edges: [{{ to: 0, color: 0 }}], width: 1 }}, {{ sha: '{b}', lane: 0, color: 0, top: true, merging: [], pass: [], edges: [], width: 1 }}]; \
          g.index = new Map([['{a}', 0], ['{b}', 1]]); g.selected = '{a}'; \
          g.detail = {{ sha: '{a}', parents: ['{b}'], from: '{b}', author: 'Ramon Villain', time: Date.now(), message: 'feat(charts): note a slow chart\\n\\nthe body', total: 2, \
            files: [{{ path: 'src/Chart.tsx', status: 'M', add: 3, del: 1 }}, {{ path: 'src/new.ts', status: 'A', add: 5, del: 0 }}] }};"
-    );
+    )
+}
+
+#[gpui::test]
+fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_graph(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let state = graph_state();
     let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&state)).unwrap();
     for want in ["Ramon Villain", "commit: aaaaaaa", "feat(charts): note a slow chart", "2 files changed", "parent: bbbbbb", "BRANCH / TAG", "COMMIT MESSAGE", "\"graph-rows\" ×2", "\"graph-files\" ×2", "\"graph-left\"", "read only"] {
         assert!(tree.contains(want), "graph tab lacks {want}: {tree}");
@@ -483,11 +488,64 @@ fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_grap
     for want in ["graph-find-next", "graph-find-prev", "graph-find-close", "1 of 2"] {
         assert!(tree.contains(want), "find bar lacks {want}: {tree}");
     }
-    let picked = format!("{diff} g.startPick(1, false); g.movePick(2); g.endPick();");
+    let picked = format!("{diff} g.clickPick(1, false); g.clickPick(2, true);");
     let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&picked)).unwrap();
     for want in ["graph-send-pick", "Send to firstmate", "2 lines", "graph-send-close"] {
         assert!(tree.contains(want), "send bar lacks {want}: {tree}");
     }
+}
+
+struct Mounted(gpui::Entity<gpui_shell::ShellRoot>);
+impl gpui::Render for Mounted {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        gpui::ParentElement::child(gpui::Styled::size_full(gpui::div()), self.0.clone())
+    }
+}
+
+/// A description only counts a virtual list's rows. They run while the window lays out, and a row that throws (a handler
+/// registered inside it is refused) logs an error and leaves the list blank, so this lays out a real window with a diff
+/// open and fails on that error.
+#[gpui::test]
+fn gitview_graph_diff_rows_lay_out_without_an_error(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    use std::{io, ops::Deref, sync::{Arc, Mutex}};
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Log {
+        type Writer = Log;
+        fn make_writer(&'a self) -> Log { self.clone() }
+    }
+    let log = Log::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::fmt().with_writer(log.clone()).with_ansi(false).finish());
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let rows = "[{ kind: '@', text: '@@ -1,2 +1,2 @@' }, { kind: '-', old: 1, text: 'const a = 1;' }, { kind: '+', next: 1, text: 'const a = 2;', mark: [10, 11] }, { kind: '', old: 2, next: 2, text: 'return a;' }]";
+    let setup = format!("{} g.run = 1e9; g.file = g.detail.files[0]; g.view = {{ rows: {rows} }}; g.clickPick(1, false);", graph_state());
+    std::fs::write(staged.0.join("main.js"), format!(
+        "import Real from './mods/gitview/main.js'; export default class Scenario extends Real {{ init(props, cx) {{ super.init(props, cx); {setup} }} }}"
+    )).unwrap();
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    gpui_shell::policy::set_default(
+        Policy::new()
+            .with_storage_path(staged.0.join("store.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(fixture(true, json!({"graph": true}), updates("current", "current")), calls.clone())).unwrap(),
+    );
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+    let mut context = gpui::VisualTestContext::from_window(*window.deref(), cx);
+    context.simulate_resize(size(px(1500.), px(860.)));
+    for _ in 0..3 {
+        context.update(|window, cx| window.draw(cx).clear(cx));
+        context.run_until_parked();
+    }
+    let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert!(!log.contains("ERROR"), "a virtual list row failed while the diff laid out: {log}");
+    assert!(calls.borrow().unexpected.is_empty(), "{:?}", calls.borrow().unexpected);
 }
 
 #[gpui::test]

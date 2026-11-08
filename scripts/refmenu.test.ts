@@ -270,28 +270,25 @@ function pickGraph() {
   return g;
 }
 
-test("pressing a line picks it, dragging widens it, shift extends it, and pressing the lone pick again clears it", () => {
+test("clicking a line picks it, shift widens it, and clicking the lone pick again clears it", () => {
   const g = pickGraph();
-  g.startPick(2, false);
-  expect(g.pick).toMatchObject({ from: 2, to: 2, held: true });
-  g.movePick(4); g.movePick(1);
+  g.clickPick(2, false);
+  expect(g.pick).toMatchObject({ from: 2, to: 2 });
+  g.clickPick(4, true);
+  expect([g.pick.from, g.pick.to]).toEqual([2, 4]);
+  g.clickPick(1, true);
   expect([g.pick.from, g.pick.to]).toEqual([1, 2]);
-  g.endPick();
-  g.movePick(5);
-  expect([g.pick.from, g.pick.to, g.pick.held]).toEqual([1, 2, false]);
-  g.startPick(5, true);
-  expect([g.pick.from, g.pick.to]).toEqual([2, 5]);
-  g.endPick();
-  g.startPick(3, false); g.endPick();
-  g.startPick(3, false);
+  g.clickPick(5, false);
+  expect([g.pick.from, g.pick.to]).toEqual([5, 5]);
+  g.clickPick(5, false);
   expect(g.pick).toBeNull();
-  expect([g.picked(3)]).toEqual([false]);
+  expect([g.picked(5)]).toEqual([false]);
 });
 
 test("the graph builds the note from the picked rows and the commit on show", () => {
   const g = pickGraph();
   expect(g.pickNote("hi")).toBeNull();
-  g.startPick(3, false); g.movePick(4); g.endPick();
+  g.clickPick(3, false); g.clickPick(4, true);
   const body = g.pickNote("hi");
   expect(body).toContain("Repo: o/r (/r)");
   expect(body).toContain("Commit: ccccccccccc feat: x");
@@ -306,10 +303,10 @@ test("the graph builds the note from the picked rows and the commit on show", ()
 test("changing file, view or repo drops the pick", async () => {
   const g = pickGraph();
   g.detail.files = [g.file];
-  g.startPick(1, false);
+  g.clickPick(1, false);
   g.setMode("file", cx);
   expect(g.pick).toBeNull();
-  g.startPick(1, false);
+  g.clickPick(1, false);
   g.closeFile(cx);
   expect(g.pick).toBeNull();
 });
@@ -345,7 +342,7 @@ test.skipIf(!existsSync(REAL_INBOX))("a picked selection lands in a scratch FM_H
   };
   const actions = createActions({ exec, openLink() {}, copy() {}, notify() {}, inbox: REAL_INBOX });
   const g = pickGraph();
-  g.startPick(3, false); g.movePick(4); g.endPick();
+  g.clickPick(3, false); g.clickPick(4, true);
   const body = g.pickNote("what does this do?");
   const id = await actions.sendNote("herdr-test-1", body);
   const again = await actions.sendNote("herdr-test-1", body);
