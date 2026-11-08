@@ -200,7 +200,10 @@ function leftRow(item, t, graph) {
   if (item.type === "folder") return row.child(indent(item.depth)).text_color(t.muted).child(div().w(10).flex_none().child(item.open ? "▾" : "▸")).child(div().flex_1().min_w(0).truncate().child(item.name)).child(div().text_size(10).text_color(t.dim).child(String(item.count)));
   if (item.type === "branch") {
     const ab = item.ab;
-    return row.child(indent(item.depth + 1)).when(item.hidden, (e) => e.opacity(0.45)).child(div().w(5).h(5).rounded_full().flex_none().bg(item.solo ? t.accent : t.dim))
+    return row.child(indent(item.depth + 1)).when(item.hidden, (e) => e.opacity(0.45))
+      .when(item.marked === "tip", (e) => e.bg(t.selected).font_semibold())
+      .when(item.marked === "contains", (e) => e.bg(t.hover))
+      .child(div().w(5).h(5).rounded_full().flex_none().bg(item.solo || item.marked ? t.accent : t.dim))
       .child(div().flex_1().min_w(0).truncate().child(item.leaf))
       .when(item.hidden, (e) => e.child(div().text_size(10).text_color(t.dim).flex_none().child("hidden")))
       .when(item.solo, (e) => e.child(div().text_size(10).text_color(t.accent).flex_none().child("solo")))
@@ -232,7 +235,7 @@ function leftPane(graph, view, t) {
       .child(Input.new(view.input).h(28).px(8).rounded(6).border_1().border_color(t.border).bg(t.background).text_size(12).text_color(t.foreground)))
     .child(div().flex_1().min_h(0).relative()
       .child(v_virtual_list("graph-left", items.length, ROW, (i) => items[i].key, (range) => items.slice(range.start, range.end).map((item) => leftRow(item, t, graph)))
-        .on_item_click((key, cx) => graph.clickLeft(key, cx)).on_item_secondary_click((key) => view.openMenu(graph.menuLeft(key))).size_full())
+        .track_scroll(view.leftScroll).on_item_click((key, cx) => graph.clickLeft(key, cx)).on_item_secondary_click((key) => view.openMenu(graph.menuLeft(key))).size_full())
       .child(Scrollbar.vertical("graph-left").absolute().inset_0())
       .when(!info, (e) => e.child(div().absolute().p(12).text_color(t.dim).child(graph.error ?? "Loading…"))));
 }

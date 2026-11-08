@@ -48,8 +48,9 @@ function saveRepo(space, path) {
 
 export class Graph {
   /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
-  constructor(git, locate, scroll, projects = null) {
-    this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects;
+  constructor(git, locate, scroll, projects = null, leftScroll = null) {
+    this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll;
+    this.marked = null; this.kids = null; this.leftMarkKey = null;
     this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
     this.worktree = null; this.ab = new Map(); this.wt = new Map(); this.wipSnap = null;
@@ -324,6 +325,7 @@ export class Graph {
 
   async selectWip(cx) {
     this.selected = "wip"; this.detail = this.wipDetail(); this.detailError = null; this.file = null; this.view = null;
+    this.revealMarked();
     cx.notify();
   }
 
@@ -336,6 +338,7 @@ export class Graph {
 
   async selectCommit(sha, cx) {
     this.selected = sha; this.detail = this.details.get(sha) ?? null; this.detailError = null; this.file = null; this.view = null;
+    this.revealMarked();
     cx.notify();
     if (this.detail) { this.prefetch(this.detail, cx); return; }
     return this.later(cx, (cx) => this.readCommit(sha, cx));
@@ -574,9 +577,55 @@ export class Graph {
   }
   setFilter(text, cx) { this.filter = text; this.leftCache = null; cx.notify(); }
 
+  /**
+   * The local branches the selected commit belongs to: those whose tip it is, else those that reach it through the loaded history.
+   * Walks the children of the commit once, so a click costs one pass over the loaded commits however many branches there are.
+   */
+  markedBranches() {
+    const key = `${this.selected}|${this.commits.length}|${this.info?.heads.length}`;
+    if (this.marked?.key === key) return this.marked;
+    const names = new Set(), found = { key, names, tips: false };
+    this.marked = found;
+    const info = this.info, sel = this.selected;
+    if (!info || !sel) return found;
+    if (sel === "wip") {
+      const branch = info.worktrees.find((w) => w.path === this.worktree)?.branch;
+      if (branch) { names.add(branch); found.tips = true; }
+      return found;
+    }
+    for (const h of info.heads) if (h.sha === sel) names.add(h.name);
+    if (names.size) { found.tips = true; return found; }
+    if (!this.index.has(sel)) return found;
+    if (this.kids?.count !== this.commits.length) {
+      const children = new Map();
+      for (const c of this.commits) for (const p of c.parents ?? []) { const list = children.get(p); if (list) list.push(c.sha); else children.set(p, [c.sha]); }
+      this.kids = { count: this.commits.length, children };
+    }
+    const reach = new Set([sel]), todo = [sel];
+    while (todo.length) for (const kid of this.kids.children.get(todo.pop()) ?? []) if (!reach.has(kid)) { reach.add(kid); todo.push(kid); }
+    for (const h of info.heads) if (reach.has(h.sha)) names.add(h.name);
+    return found;
+  }
+
+  /** Opens the LOCAL section and the folders holding the marked branches, then scrolls the first one into view. */
+  revealMarked() {
+    const { names } = this.markedBranches();
+    if (!names.size) return;
+    this.open.local = true;
+    for (const name of names) {
+      const parts = name.split("/");
+      for (let i = 1; i < parts.length; i++) this.collapsed.delete(parts.slice(0, i).join("/"));
+    }
+    this.leftCache = null;
+    const at = this.left().findIndex((item) => item.type === "branch" && names.has(item.name));
+    if (at >= 0) this.leftScroll?.scroll_to_item(at, "center");
+  }
+
   /** The left column as one flat list so the window draws only the rows on screen. */
   left() {
-    if (this.leftCache) return this.leftCache;
+    const markKey = `${this.selected}|${this.commits.length}`;
+    if (this.leftCache && this.leftMarkKey === markKey) return this.leftCache;
+    this.leftMarkKey = markKey;
     const info = this.info, items = [];
     if (!info) return (this.leftCache = items);
     const needle = this.filter.toLowerCase(), match = (name) => !needle || name.toLowerCase().includes(needle);
@@ -584,9 +633,12 @@ export class Graph {
       items.push({ type: "section", id, title, total, shown, open: this.open[id], key: `section:${id}` });
       return this.open[id] || Boolean(needle);
     };
+    const marked = this.markedBranches();
     const mark = (item) => {
       const ref = this.keyRef(item);
-      return ref ? { ...item, hidden: this.hidden.has(ref), solo: this.soloed.has(ref) } : item;
+      if (!ref) return item;
+      const here = item.type === "branch" && marked.names.has(item.name);
+      return { ...item, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), marked: here ? (marked.tips ? "tip" : "contains") : null };
     };
     const head = info.worktrees.find((w) => w.path === this.worktree);
     items.push({ type: "head", name: head?.branch ?? "HEAD", sha: this.headOf(), key: "head" });
