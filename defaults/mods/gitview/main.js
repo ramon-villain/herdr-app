@@ -8,6 +8,8 @@ import { renderGraphTab } from "./graphview.js";
 
 const REFRESH_MS = 10000;
 const WORKERS = 3;
+// Where Firstmate keeps its clones; the repository dropdown of the Git graph lists them.
+const PROJECTS = "/Volumes/Coding/firstmate/projects";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(space, all) {
@@ -40,8 +42,8 @@ export default class GitView extends View {
     this.diffScroll = VirtualListScrollHandle.new();
     this.graph = new Graph(this.git, () => {
       const space = spaces().find((s) => s.active);
-      return { dir: space ? place(space, panes()) : null, on: space?.machine ?? null };
-    }, this.graphScroll);
+      return { dir: space ? place(space, panes()) : null, on: space?.machine ?? null, space: space?.id ?? null };
+    }, this.graphScroll, modProps()?.projects ?? PROJECTS);
     this.input = InputState.new({ placeholder: "Filter branches, tags and stashes" });
     this.input.on("change", (_e, cx) => this.graph.setFilter(this.input.value(), cx));
     this.search = InputState.new({ placeholder: "Search message, author, sha or file" });

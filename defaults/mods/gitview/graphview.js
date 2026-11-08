@@ -2,6 +2,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { settings } from "herdr";
 import { lineSegments } from "./model.js";
+import { diffPalette } from "./palette.js";
 
 const ROW = 24, LANE = 9, MID = 12, LEFT_W = 300, RIGHT_W = 390, LABEL_W = 170, GRAPH_MAX = 230;
 const LANE_COLORS = ["#4f8cff", "#b04fe0", "#ff4f7b", "#ff8a3d", "#f5c542", "#9bd34a", "#3fd08a", "#2fc7d6", "#4a6cf0", "#8a5cf0", "#e0509b", "#d6a04a"];
@@ -111,19 +112,18 @@ function graphList(graph, view, t) {
 
 // ---- the diff that replaces the graph
 
-function diffLine(r, t, ext) {
-  if (r.kind === "@") return h_flex().w_full().h(ROW - 4).flex_none().items_center().px(12).bg(t.raised).text_color(t.dim).child(div().truncate().child(r.text));
-  const add = r.kind === "+", del = r.kind === "-";
-  const tint = add ? t.ansi2 : t.ansi1;
-  const colors = { keyword: t.ansi5, string: t.ansi3, number: t.ansi6, comment: t.dim, "": t.foreground };
+function diffLine(r, ext) {
+  const p = diffPalette;
+  if (r.kind === "@") return h_flex().w_full().h(ROW - 4).flex_none().items_center().px(12).bg(p.hunk.ground).text_color(p.hunk.text).child(div().truncate().child(r.text));
+  const add = r.kind === "+", del = r.kind === "-", side = add ? p.added : p.removed;
+  const gutter = (n) => div().w(38).flex_none().text_right().pr(6).text_color(add || del ? p.text : p.lineNumber).when(add || del, (e) => e.bg(side.gutter)).child(n === undefined ? "" : String(n));
   return h_flex().w_full().h(ROW - 4).flex_none().items_center()
-    .when(add || del, (e) => e.bg(`${tint}2e`))
-    .child(div().w(38).flex_none().text_right().pr(6).text_color(t.dim).child(r.old === undefined ? "" : String(r.old)))
-    .child(div().w(38).flex_none().text_right().pr(6).text_color(t.dim).child(r.next === undefined ? "" : String(r.next)))
-    .child(div().w(14).flex_none().text_color(add || del ? tint : t.dim).child(add ? "+" : del ? "−" : ""))
+    .when(add || del, (e) => e.bg(side.line))
+    .child(gutter(r.old)).child(gutter(r.next))
+    .child(div().w(14).flex_none().text_color(add || del ? side.sign : p.lineNumber).child(add ? "+" : del ? "−" : ""))
     .child(h_flex().flex_1().min_w(0).whitespace_nowrap().overflow_hidden()
       .children((r.kind === "" ? [{ text: r.text, kind: "", hl: false }] : lineSegments(r.text, ext, r.mark)).map((s) =>
-        div().flex_none().text_color(colors[s.kind]).when(s.hl, (e) => e.bg(`${tint}66`)).child(s.text))));
+        div().flex_none().text_color(s.hl ? p.wordText : p.syntax[s.kind]).when(s.hl, (e) => e.bg(side.word)).child(s.text))));
 }
 
 function pill(t, id, text, on, onClick) {
@@ -146,8 +146,8 @@ function diffPane(graph, view, t, cx) {
       .child(h_flex().w(80).justify_end()
         .child(pill(t, "graph-hunk-prev", "↑", false, () => graph.step(-1, view.diffScroll)))
         .child(pill(t, "graph-hunk-next", "↓", false, () => graph.step(1, view.diffScroll)))))
-    .child(div().flex_1().min_h(0).relative().text_size(11)
-      .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r) => diffLine(r, t, ext)))
+    .child(div().flex_1().min_h(0).relative().text_size(11).bg(diffPalette.ground)
+      .child(v_virtual_list("graph-diff", rows.length, ROW - 4, (i) => String(i), (range) => rows.slice(range.start, range.end).map((r) => diffLine(r, ext)))
         .track_scroll(view.diffScroll).size_full())
       .child(Scrollbar.vertical("graph-diff").absolute().inset_0())
       .when(!graph.view, (e) => e.child(div().absolute().p(14).text_color(t.dim).child("Loading…")))
@@ -254,13 +254,16 @@ function detailPane(graph, view, t, items) {
 // ---- the tab
 
 function topBar(graph, t) {
-  const repoName = graph.info?.root.split("/").pop() ?? "";
+  const repoName = (graph.info?.root ?? graph.repo)?.split("/").pop() ?? "";
   const current = graph.info?.worktrees.find((w) => w.path === graph.worktree);
   return h_flex().h(46).flex_none().px(14).gap(18).items_center().border_b(1).border_color(t.border)
-    .child(v_flex().child(div().text_size(10).text_color(t.dim).child("repository")).child(div().font_semibold().child(repoName)))
+    .child(v_flex().relative()
+      .child(div().text_size(10).text_color(t.dim).child("repository"))
+      .child(div().id("graph-repo").flex().gap(6).cursor_pointer().on_click((_e, cx) => { graph.pickingRepo = !graph.pickingRepo; graph.picking = false; cx.notify(); })
+        .child(div().font_semibold().child(repoName)).child(div().text_color(t.muted).child("▾"))))
     .child(v_flex().relative()
       .child(div().text_size(10).text_color(t.dim).child("worktree"))
-      .child(div().id("graph-worktree").flex().gap(6).cursor_pointer().on_click((_e, cx) => { graph.picking = !graph.picking; cx.notify(); })
+      .child(div().id("graph-worktree").flex().gap(6).cursor_pointer().on_click((_e, cx) => { graph.picking = !graph.picking; graph.pickingRepo = false; cx.notify(); })
         .child(div().font_semibold().child(current?.branch ?? (current ? `detached ${current.sha?.slice(0, 7)}` : "HEAD"))).child(div().text_color(t.muted).child("▾"))))
     .child(div().flex_1())
     .child(div().text_size(11).text_color(t.dim).child("read only"));
@@ -274,6 +277,16 @@ function worktreeMenu(graph, t) {
       .child(div().text_size(10).text_color(t.dim).truncate().max_w(170).child(w.path.split("/").pop()))));
 }
 
+function repoMenu(graph, t) {
+  const own = graph.ownRoot ? [{ name: graph.ownRoot.split("/").pop(), note: "this space", path: null }] : [];
+  const choices = [...own, ...graph.repos.filter((r) => r.path !== graph.ownRoot).map((r) => ({ ...r, note: r.path.split("/").slice(0, -1).pop() }))];
+  return v_flex().absolute().top(44).left(14).w(300).max_h(360).overflow_y_scrollbar().rounded(8).border_1().border_color(t.border).bg(t.popover).p(4).shadow_lg()
+    .children(choices.map((r, i) => h_flex().id(`graph-repo-${i}`).h(28).px(8).gap(8).items_center().rounded(5).cursor_pointer().text_size(12)
+      .when(r.path === graph.repo, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => graph.pickRepo(r.path, cx))
+      .child(div().flex_1().min_w(0).truncate().child(r.name))
+      .child(div().text_size(10).text_color(t.dim).truncate().max_w(120).child(r.note))));
+}
+
 export function renderGraphTab(graph, view, t) {
   const items = graph.fileItems();
   return v_flex().id("gitgraph").size_full().min_h(0).relative().bg(t.background).text_color(t.foreground).text_size(13)
@@ -282,5 +295,6 @@ export function renderGraphTab(graph, view, t) {
       .child(leftPane(graph, view, t))
       .child(graph.file ? diffPane(graph, view, t) : graphList(graph, view, t))
       .when(graph.panelOpen, (e) => e.child(detailPane(graph, view, t, items))))
-    .when(graph.picking && Boolean(graph.info), (e) => e.child(worktreeMenu(graph, t)));
+    .when(graph.picking && Boolean(graph.info), (e) => e.child(worktreeMenu(graph, t)))
+    .when(graph.pickingRepo, (e) => e.child(repoMenu(graph, t)));
 }

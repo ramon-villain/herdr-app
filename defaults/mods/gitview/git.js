@@ -390,5 +390,11 @@ export function createReader({ exec, readTextFile }) {
     return refs.code === 0 && tags.code === 0 ? [refs, tags, stashes, worktrees, head].map((r) => r.stdout).join("\0") : null;
   }
 
-  return { read, diff, diffBatch, repo, probe, aheadBehind, logPage, commit, fileDiff, search };
+  /** The folders directly under `dir` that hold a git checkout, by name. */
+  async function clones(dir, on) {
+    const r = await exec("sh", ["-c", 'for d in "$1"/*/; do [ -e "${d}.git" ] && basename "$d"; done; true', "sh", dir], { on, timeout: 5000 });
+    return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
+  }
+
+  return { read, diff, diffBatch, repo, probe, aheadBehind, logPage, commit, fileDiff, search, clones };
 }

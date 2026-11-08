@@ -22,16 +22,31 @@ const OPEN = { local: true, remote: false, worktrees: true, stashes: true, tags:
 const refOf = { branch: (name) => `refs/heads/${name}`, remote: (name) => `refs/remotes/${name}`, tag: (name) => `refs/tags/${name}` };
 
 const SHOW_KEY = "gitview.graph.show";
+const REPO_KEY = "gitview.graph.repo";
 
 // Remote branches and tags are for looking things up, so the graph starts without them; the choice is kept.
 function savedShow() {
   try { return { remotes: false, tags: false, ...JSON.parse(localStorage.getItem(SHOW_KEY) ?? "{}") }; } catch { return { remotes: false, tags: false }; }
 }
 
+/** The repo picked for a space, if any: the dropdown's choice is remembered per space. */
+function savedRepo(space) {
+  try { return JSON.parse(localStorage.getItem(REPO_KEY) ?? "{}")[space] ?? null; } catch { return null; }
+}
+
+function saveRepo(space, path) {
+  try {
+    const all = JSON.parse(localStorage.getItem(REPO_KEY) ?? "{}");
+    if (path) all[space] = path; else delete all[space];
+    localStorage.setItem(REPO_KEY, JSON.stringify(all));
+  } catch { /* storage can be unavailable */ }
+}
+
 export class Graph {
-  /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null }} locate */
-  constructor(git, locate, scroll) {
-    this.git = git; this.locate = locate; this.scroll = scroll;
+  /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
+  constructor(git, locate, scroll, projects = null) {
+    this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects;
+    this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
     this.worktree = null; this.ab = new Map(); this.wt = new Map(); this.wipSnap = null;
     this.commits = []; this.rows = []; this.index = new Map(); this.carry = undefined; this.done = false; this.lastAgo = null; this.maxWidth = 1;
@@ -60,6 +75,8 @@ export class Graph {
   async load(cx) {
     const run = ++this.run;
     this.where = this.locate();
+    if (!this.restored) { this.restored = true; this.repo = this.where.space ? savedRepo(this.where.space) : null; }
+    if (this.repo) this.where = { ...this.where, dir: this.repo, on: null };
     if (!this.where.dir) { this.error = "No folder"; return; }
     this.loading = true; this.error = null; cx.notify();
     try {
@@ -68,6 +85,7 @@ export class Graph {
       if (run !== this.run) return;
       if (!info.ok) { this.error = info.reason; this.info = null; return; }
       this.info = info; this.leftCache = null;
+      if (!this.repo) this.ownRoot = info.root;
       if (!this.worktree || !info.worktrees.some((w) => w.path === this.worktree)) this.worktree = info.worktrees.find((w) => info.root === w.path)?.path ?? info.root;
       // Not awaited: the first paint does not wait for it, and the poll skips its check until it is there.
       this.signature = null;
@@ -76,6 +94,7 @@ export class Graph {
       cx.notify();
       this.git.aheadBehind(info.root, info.base, this.on).then((ab) => { if (run === this.run) { this.ab = ab; this.leftCache = null; cx.notify(); } }).catch(() => null);
       this.loadWorktrees(run, cx);
+      this.loadRepos().catch(() => null);
       this.loadWip(cx);
       await this.page(run, cx);
     } catch (e) { if (run === this.run) this.error = String(e); } finally { if (run === this.run) { this.loading = false; cx.notify(); } }
@@ -192,12 +211,36 @@ export class Graph {
     return s ? { wip: true, sha: null, parents: s.sha ? [s.sha] : [], from: "HEAD", author: "Working copy", time: Date.now(), message: "Uncommitted changes", files: s.uncommitted, total: s.uncommittedTotal } : null;
   }
 
+  /** The checkouts the repository dropdown offers: the space's own repo, then the project clones with overseer first. */
+  async loadRepos() {
+    const own = this.locate();
+    if (!this.projects || own.on) { this.repos = []; return; }
+    const names = await this.git.clones(this.projects, null);
+    this.repos = names.sort((a, b) => Number(b === "overseer") - Number(a === "overseer") || a.localeCompare(b)).map((name) => ({ name, path: `${this.projects.replace(/\/$/, "")}/${name}` }));
+  }
+
+  /** Shows another repository read-only, or the space's own again for `null`, and remembers the pick for the space. */
+  pickRepo(path, cx) {
+    this.pickingRepo = false;
+    if (path !== this.repo) {
+      this.repo = path;
+      const space = this.where?.space;
+      if (space) saveRepo(space, path);
+      this.worktree = null; this.info = null; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
+      this.selected = null; this.detail = null; this.file = null; this.view = null; this.details.clear(); this.views.clear();
+      this.hidden.clear(); this.soloed.clear(); this.menu = null; this.ab = new Map(); this.wt = new Map(); this.signature = null;
+      this.reset();
+      this.later(cx, (cx) => this.load(cx)).catch(() => null);
+    }
+    cx.notify();
+  }
+
   pickWorktree(path, cx) {
     this.picking = false;
     if (path !== this.worktree) {
       this.worktree = path; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
       if (this.selected === "wip") { this.selected = null; this.detail = null; this.file = null; this.view = null; }
-      this.loadWip(cx);
+      this.later(cx, (cx) => this.loadWip(cx)).catch(() => null);
     }
     cx.notify();
   }
@@ -240,10 +283,21 @@ export class Graph {
     cx.notify();
   }
 
+  /** Runs `work` in a task of its own: the cx of a click is not valid once its handler has returned, so a notify after an await must use the task's. */
+  later(cx, work) {
+    return new Promise((resolve, reject) => {
+      cx.spawn(async (task) => { try { resolve(await work(task)); } catch (e) { reject(e); } });
+    });
+  }
+
   async selectCommit(sha, cx) {
     this.selected = sha; this.detail = this.details.get(sha) ?? null; this.detailError = null; this.file = null; this.view = null;
     cx.notify();
     if (this.detail) { this.prefetch(this.detail, cx); return; }
+    return this.later(cx, (cx) => this.readCommit(sha, cx));
+  }
+
+  async readCommit(sha, cx) {
     try {
       const detail = await this.git.commit(this.info.root, sha, this.on, this.commits[this.index.get(sha)]?.parents);
       keep(this.details, sha, detail, KEPT_DETAILS);
@@ -337,9 +391,10 @@ export class Graph {
     if (!file) return;
     this.file = file; this.mode = "diff"; this.hunkAt = -1; this.view = this.cachedView(this.detail, file, "diff");
     cx.notify();
-    if (!this.view) await this.loadView(cx);
+    const warm = () => { if (this.file === file) this.viewFor(this.detail, file, "file").catch(() => null); };
+    if (this.view) return warm();
     // File View is one click away, so its read starts now.
-    if (this.file === file) this.viewFor(this.detail, file, "file").catch(() => null);
+    return this.later(cx, async (cx) => { await this.loadView(cx); warm(); });
   }
 
   async loadView(cx) {
@@ -356,7 +411,7 @@ export class Graph {
     if (this.mode === mode || !this.file) return;
     this.mode = mode; this.view = this.cachedView(this.detail, this.file, mode);
     cx.notify();
-    if (!this.view) this.loadView(cx);
+    if (!this.view) this.later(cx, (cx) => this.loadView(cx)).catch(() => null);
   }
 
   closeFile(cx) { this.file = null; this.view = null; cx.notify(); }

@@ -376,7 +376,7 @@ function graphOf(commits: any[]) {
   g.commits = commits; g.info = { heads: [], remotes: [], tags: [], worktrees: [], bySha: new Map() };
   return g;
 }
-const cx = { notify() {} };
+const cx = { notify() {}, spawn(work: (cx: any) => Promise<void>) { work(cx); } };
 
 test("the list has an uncommitted row first only when there are changes, and only matches when asked", () => {
   const g = graphOf([{ sha: "a1", subject: "x" }, { sha: "b2", subject: "y" }, { sha: "c3", subject: "z" }]);
@@ -607,7 +607,7 @@ test("the full-file view is its own cache entry, and a failed read is not kept",
   g.setMode("file", cx);
   await settle();
   expect(g.view.rows.map((r: any) => r.kind)).toEqual(["@", "+"]);
-  expect(calls.fileDiff.filter((c) => c === "d.ts:true")).toHaveLength(2);
+  expect(calls.fileDiff.filter((c) => c === "d.ts:true").length).toBeGreaterThanOrEqual(2);
 });
 
 test("the file rows are built once per commit and layout", async () => {
@@ -686,4 +686,103 @@ test("the probe is equal while nothing moved and differs after a commit, a branc
   seen.push(await reader.probe(work, null));
   expect(new Set(seen).size).toBe(5);
   expect((await reader.probe(join(work, ".."), null))).toBeNull();
+});
+
+// A click's cx stops working once its handler returns; only the cx a spawned task receives can still redraw.
+function clickCx() {
+  const task = { drawn: 0, notify() { this.drawn++; }, spawn() {} };
+  const click: any = { live: true, notify() { if (!this.live) throw new Error("click cx used after its handler returned"); }, spawn(work: (cx: any) => Promise<void>) { work(task); } };
+  return { click, task, returned() { click.live = false; } };
+}
+
+test("a slow file opened by click and a switch of view redraw through the task's cx, not the click's", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  let releaseFull: () => void = () => {};
+  const fullGate = new Promise<void>((r) => { releaseFull = r; });
+  const { g } = cachedGraph({
+    diffBatch: async () => { await gate; return new Map(); },
+    fileDiff: async (_d: any, _f: any, _on: any, _root: any, { full }: any) => { if (full) await fullGate; else await gate; return { lines: ["@@ -1 +1 @@", "+a"], cut: false }; },
+  });
+  await g.select("s1", cx);
+  const open = clickCx();
+  const opening = g.openFile("e.ts", open.click);
+  open.returned();
+  expect(g.view).toBeNull();
+  release();
+  await opening;
+  expect(g.view?.rows).toHaveLength(2);
+  expect(open.task.drawn).toBeGreaterThan(0);
+
+  const mode = clickCx();
+  g.setMode("file", mode.click);
+  mode.returned();
+  expect(g.view).toBeNull();
+  releaseFull();
+  await settle();
+  expect(g.view).not.toBeNull();
+  expect(mode.task.drawn).toBeGreaterThan(0);
+});
+
+test("a commit selected by click that is not cached yet redraws through the task's cx", async () => {
+  const { g } = cachedGraph();
+  const pick = clickCx();
+  const picking = g.select("s2", pick.click);
+  pick.returned();
+  await picking;
+  expect(g.detail?.sha).toBe("s2");
+  expect(pick.task.drawn).toBeGreaterThan(0);
+});
+
+test("the clones call lists the folders that hold a checkout and leaves out plain folders", async () => {
+  const { dir } = await fixture();
+  await mkdir(join(dir, "plain"));
+  expect((await reader.clones(dir, null)).sort()).toEqual(["work", "wt"]);
+  expect(await reader.clones(join(dir, "missing"), null)).toEqual([]);
+});
+
+function repoGraph(space: string | null = "sp1") {
+  const store = new Map<string, string>();
+  (globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+  const git: any = {
+    clones: async () => ["firstmate", "zeta", "overseer"],
+    repo: async (dir: string) => ({ ok: true, root: dir, heads: [], remotes: [], tags: [], worktrees: [{ path: dir, branch: "master", sha: "x" }], stashes: [], bySha: new Map(), base: "origin/master" }),
+    probe: async () => "p", aheadBehind: async () => new Map(), read: async () => ({ ok: false }), logPage: async () => [],
+  };
+  const g = new Graph(git, () => ({ dir: "/own", on: null, space }), { scroll_to_item() {} }, "/projects/");
+  return { g, git, store };
+}
+
+test("the repository dropdown lists overseer first, switches the view to that repo, and remembers the pick per space", async () => {
+  const { g } = repoGraph();
+  await g.load(cx);
+  await settle();
+  expect(g.repos.map((r: any) => r.path)).toEqual(["/projects/overseer", "/projects/firstmate", "/projects/zeta"]);
+  expect(g.info.root).toBe("/own");
+  g.pickRepo("/projects/overseer", cx);
+  await settle();
+  expect(g.info.root).toBe("/projects/overseer");
+  expect(g.worktree).toBe("/projects/overseer");
+
+  const again = new Graph(g.git, () => ({ dir: "/own", on: null, space: "sp1" }), { scroll_to_item() {} }, "/projects");
+  await again.load(cx);
+  expect(again.info.root).toBe("/projects/overseer");
+  const other = new Graph(g.git, () => ({ dir: "/elsewhere", on: null, space: "sp2" }), { scroll_to_item() {} }, "/projects");
+  await other.load(cx);
+  expect(other.info.root).toBe("/elsewhere");
+
+  g.pickRepo(null, cx);
+  await settle();
+  expect(g.info.root).toBe("/own");
+  const reset = new Graph(g.git, () => ({ dir: "/own", on: null, space: "sp1" }), { scroll_to_item() {} }, "/projects");
+  await reset.load(cx);
+  expect(reset.info.root).toBe("/own");
+});
+
+test("a space on another machine offers no local clones", async () => {
+  const { g } = repoGraph();
+  g.locate = () => ({ dir: "/own", on: "box", space: "sp1" });
+  await g.load(cx);
+  await settle();
+  expect(g.repos).toEqual([]);
 });

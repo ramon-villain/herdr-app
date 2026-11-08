@@ -847,7 +847,7 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   (lanes from `lanes.js`, a row for uncommitted changes, search over message, author, sha and file), and the
   selected commit on the right with its files and a diff that replaces the graph. It reads the focused
   space's repo with the same reader (`git.js`: status, rev-parse, rev-list, log, diff, for-each-ref,
-  stash list, worktree list; never fetch, checkout or write); a worktree picker switches between that repo's checkouts.
+  stash list, worktree list; never fetch, checkout or write); a worktree picker switches between that repo's checkouts. A repository picker lists the project clones under `props.projects` (default Firstmate's `projects` folder, overseer first) next to the space's own repo and shows the pick read-only; it is remembered per space in `localStorage`. The diff pane's colours come from `palette.js` (GitHub Dark High Contrast, MIT).
 
 ### Check before you finish
 
