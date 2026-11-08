@@ -31,7 +31,7 @@ function savedShow() {
   try { return { remotes: false, tags: false, ...JSON.parse(localStorage.getItem(SHOW_KEY) ?? "{}") }; } catch { return { remotes: false, tags: false }; }
 }
 
-/** The repo picked for a space, if any: the dropdown's choice is remembered per space. */
+/** The repo picked for a space: the dropdown's choice is remembered per space. "" is the space's own repo picked on purpose, null is no pick yet. */
 function savedRepo(space) {
   try { return JSON.parse(localStorage.getItem(REPO_KEY) ?? "{}")[space] ?? null; } catch { return null; }
 }
@@ -39,7 +39,7 @@ function savedRepo(space) {
 function saveRepo(space, path) {
   try {
     const all = JSON.parse(localStorage.getItem(REPO_KEY) ?? "{}");
-    if (path) all[space] = path; else delete all[space];
+    all[space] = path ?? "";
     localStorage.setItem(REPO_KEY, JSON.stringify(all));
   } catch { /* storage can be unavailable */ }
 }
@@ -77,7 +77,12 @@ export class Graph {
   async load(cx) {
     const run = ++this.run;
     this.where = this.locate();
-    if (!this.restored) { this.restored = true; this.repo = this.where.space ? savedRepo(this.where.space) : null; }
+    if (!this.restored) {
+      this.restored = true;
+      const saved = this.where.space ? savedRepo(this.where.space) : null;
+      this.repo = saved === null ? await this.defaultRepo() : saved || null;
+      if (run !== this.run) return;
+    }
     if (this.repo) this.where = { ...this.where, dir: this.repo, on: null };
     if (!this.where.dir) { this.error = "No folder"; return; }
     this.loading = true; this.error = null; cx.notify();
@@ -88,6 +93,7 @@ export class Graph {
       if (!info.ok) { this.error = info.reason; this.info = null; return; }
       this.info = info; this.leftCache = null;
       if (!this.repo) this.ownRoot = info.root;
+      else this.loadOwnRoot(run);
       if (!this.worktree || !info.worktrees.some((w) => w.path === this.worktree)) this.worktree = info.worktrees.find((w) => info.root === w.path)?.path ?? info.root;
       // Not awaited: the first paint does not wait for it, and the poll skips its check until it is there.
       this.signature = null;
@@ -211,6 +217,19 @@ export class Graph {
   wipDetail() {
     const s = this.wipSnap;
     return s ? { wip: true, sha: null, parents: s.sha ? [s.sha] : [], from: "HEAD", author: "Working copy", time: Date.now(), message: "Uncommitted changes", files: s.uncommitted, total: s.uncommittedTotal } : null;
+  }
+
+  /** A space with no pick yet starts on the overseer clone, else on its own repo. */
+  async defaultRepo() {
+    await this.loadRepos().catch(() => null);
+    return this.repos.find((r) => r.name === "overseer")?.path ?? null;
+  }
+
+  /** The space's own repo, which the dropdown keeps listed while another one is shown. */
+  loadOwnRoot(run) {
+    const own = this.locate();
+    if (!own.dir || this.ownRoot) return;
+    this.git.repo(own.dir, own.on).then((info) => { if (info.ok && run === this.run) this.ownRoot = info.root; }).catch(() => null);
   }
 
   /** The checkouts the repository dropdown offers: the space's own repo, then the project clones with overseer first. */
