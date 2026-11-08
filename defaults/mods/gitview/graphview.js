@@ -1,7 +1,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { settings } from "herdr";
-import { fileTree, lineSegments } from "./model.js";
+import { lineSegments } from "./model.js";
 
 const ROW = 24, LANE = 9, MID = 12, LEFT_W = 300, RIGHT_W = 390, LABEL_W = 170, GRAPH_MAX = 230;
 const LANE_COLORS = ["#4f8cff", "#b04fe0", "#ff4f7b", "#ff8a3d", "#f5c542", "#9bd34a", "#3fd08a", "#2fc7d6", "#4a6cf0", "#8a5cf0", "#e0509b", "#d6a04a"];
@@ -275,7 +275,7 @@ function worktreeMenu(graph, t) {
 }
 
 export function renderGraphTab(graph, view, t) {
-  const items = graph.detail ? fileItems(graph) : [];
+  const items = graph.fileItems();
   return v_flex().id("gitgraph").size_full().min_h(0).relative().bg(t.background).text_color(t.foreground).text_size(13)
     .child(topBar(graph, t))
     .child(h_flex().w_full().flex_1().min_h(0).items_stretch()
@@ -283,9 +283,4 @@ export function renderGraphTab(graph, view, t) {
       .child(graph.file ? diffPane(graph, view, t) : graphList(graph, view, t))
       .when(graph.panelOpen, (e) => e.child(detailPane(graph, view, t, items))))
     .when(graph.picking && Boolean(graph.info), (e) => e.child(worktreeMenu(graph, t)));
-}
-
-function fileItems(graph) {
-  const files = graph.detail.files;
-  return graph.fileMode === "tree" ? fileTree(files) : files.map((file) => ({ type: "file", file, name: file.path, depth: 0 }));
 }
