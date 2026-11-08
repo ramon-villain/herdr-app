@@ -610,6 +610,43 @@ test("the full-file view is its own cache entry, and a failed read is not kept",
   expect(calls.fileDiff.filter((c) => c === "d.ts:true").length).toBeGreaterThanOrEqual(2);
 });
 
+test("opening another file keeps File View selected and shows its whole file", async () => {
+  const { g } = cachedGraph({
+    fileDiff: async (_d: any, _file: any, _on: any, _root: any, { full }: any) => ({ lines: full ? ["@@ -1,2 +1,2 @@", " x", "+whole"] : ["@@ -1 +1 @@", "+a"], cut: false }),
+    diffBatch: async (_r: string, _o: any, _g: string[], files: any[], opts?: any) => new Map(files.map((f) => [f.path, { lines: opts?.full ? ["@@ -1,2 +1,2 @@", " x", "+whole"] : ["@@ -1 +1 @@", "+a"], cut: false }])),
+  });
+  await g.select("s1", cx);
+  await g.openFile("a.ts", cx);
+  g.setMode("file", cx);
+  await settle();
+  await g.openFile("b.ts", cx);
+  await settle();
+  expect(g.mode).toBe("file");
+  expect(g.view.rows.map((r: any) => r.text)).toContain("whole");
+});
+
+test("in File View the whole files of the next few are read in one run, and only those", async () => {
+  const fullBatches: string[][] = [];
+  const { g } = cachedGraph({
+    diffBatch: async (_r: string, _o: any, _g: string[], files: any[], opts?: any) => {
+      if (opts?.full) fullBatches.push(files.map((f) => f.path));
+      return new Map(files.map((f) => [f.path, { lines: ["@@ -1 +1 @@", "+a"], cut: false }]));
+    },
+  });
+  await g.select("s1", cx);
+  await g.openFile("b.ts", cx);
+  await settle();
+  expect(fullBatches).toEqual([]);
+  g.setMode("file", cx);
+  await settle();
+  expect(fullBatches).toEqual([["c.ts", "d.ts", "e.ts", "f.ts", "g.ts", "h.ts"]]);
+  expect(g.cachedView(g.detail, g.detail.files[2], "file")).not.toBeNull();
+  expect(g.cachedView(g.detail, g.detail.files[8], "file")).toBeNull();
+  await g.openFile("c.ts", cx);
+  await settle();
+  expect(fullBatches).toEqual([["c.ts", "d.ts", "e.ts", "f.ts", "g.ts", "h.ts"], ["i.ts"]]);
+});
+
 test("the file rows are built once per commit and layout", async () => {
   const { g } = cachedGraph();
   await g.select("s1", cx);
