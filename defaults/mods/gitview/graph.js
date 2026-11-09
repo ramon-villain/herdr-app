@@ -123,8 +123,8 @@ export class Graph {
   /** The history again for new hide or solo settings, without reading the repo's refs again. */
   async relog(cx) {
     const run = ++this.run;
-    this.reset(); this.loading = true; cx.notify();
-    try { await this.page(run, cx); } catch (e) { if (run === this.run) this.error = String(e); } finally { if (run === this.run) { this.loading = false; cx.notify(); } }
+    this.reset(); this.loading = true;
+    try { cx.notify(); await this.page(run, cx); } catch (e) { if (run === this.run) this.error = String(e); } finally { if (run === this.run) { this.loading = false; cx.notify(); } }
   }
 
   /** The timer's check: reload when a ref, a stash or a checkout moved, and refresh the uncommitted files of the shown copy. */

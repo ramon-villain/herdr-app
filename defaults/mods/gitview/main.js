@@ -114,7 +114,8 @@ export default class GitView extends View {
     const request = shared(MENU_REQUEST);
     if (!request || request.t === this.lastRequest) return;
     this.lastRequest = request.t;
-    if (request.tab === this.id) cx.spawn(async (task) => this.act(request, task));
+    // render may not notify or start a log, and a spawned body runs at once, so the sleep moves the action out of the render phase.
+    if (request.tab === this.id) cx.spawn(async (task) => { await task.sleep(0); await this.act(request, task); });
   }
 
   actions(cx) {

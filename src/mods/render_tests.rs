@@ -61,6 +61,7 @@ struct Calls {
     unexpected: Vec<String>,
     effects: Vec<(String, Vec<Value>)>,
     shared: BTreeMap<String, Value>,
+    real_git: bool,
 }
 
 fn updates(app: &str, core: &str) -> Value {
@@ -159,6 +160,11 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         let calls = calls.clone();
         module = module.async_function(name, move |a| {
             let first = a.get(0).map(from_host).unwrap_or(Value::Null);
+            if name == "exec" && first == "git" && calls.borrow().real_git {
+                let (code, stdout, stderr) = run_blocking("git", &strings(a.get(1)), opt_str(a.get(2), "cwd"), EXEC_LIMIT).map_err(HostError::new)?;
+                let out: HostValue = HostObject::new().field("code", code as f64).field("stdout", stdout).field("stderr", stderr).into();
+                return Ok(std::future::ready(Ok(out)));
+            }
             let reply = match name {
                 "readTextFile" if first == "/fixture/app/settings.json" || first == "/fixture/.ssh/config" => Some(Value::Null),
                 "readTextFile" => first
@@ -546,6 +552,88 @@ fn gitview_graph_diff_rows_lay_out_without_an_error(cx: &mut TestAppContext) {
     let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
     assert!(!log.contains("ERROR"), "a virtual list row failed while the diff laid out: {log}");
     assert!(calls.borrow().unexpected.is_empty(), "{:?}", calls.borrow().unexpected);
+}
+
+/// master holds `base`, `feat/a` adds `only a` and `feat/b` adds `only b`, so hiding or soloing a branch changes which commits the graph lists.
+fn graph_repo() -> PathBuf {
+    let dir = PathBuf::from(format!("/var/tmp/herdr-graph-repo-{}", std::process::id()));
+    let script = "set -e; git init -q -b master .; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e.c GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e.c; \
+        git commit -q --allow-empty -m base; git checkout -q -b feat/a; git commit -q --allow-empty -m 'only a'; \
+        git checkout -q master; git checkout -q -b feat/b; git commit -q --allow-empty -m 'only b'; git checkout -q master";
+    std::fs::create_dir_all(&dir).unwrap();
+    let status = std::process::Command::new("sh").args(["-c", script]).current_dir(&dir).status().unwrap();
+    assert!(status.success());
+    dir
+}
+
+/// Runs the Git graph tab in the real engine against real git and picks Hide and Solo the way the branch menu popup does:
+/// the popup writes a request to shared state and the tab runs it.
+#[gpui::test]
+fn gitview_graph_lists_commits_after_hide_and_solo_from_the_menu(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    use std::ops::Deref;
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let repo = graph_repo();
+    std::fs::write(staged.0.join("main.js"), r#"
+import Real from './mods/gitview/main.js';
+import { notify, shared, setShared } from 'herdr';
+export default class Scenario extends Real {
+  init(props, cx) {
+    super.init(props, cx);
+    cx.timer.every(20, (cx) => {
+      const go = shared('test.go');
+      if (go && go.t !== this.sent) { this.sent = go.t; setShared('gitview.menu', { t: go.t, tab: this.id, action: go.action, ref: go.ref }); }
+      cx.notify();
+    });
+  }
+  render(cx) {
+    const g = this.graph, out = super.render(cx);
+    notify(JSON.stringify({ commits: g.commits.map((c) => c.subject), loading: g.loading, error: g.error, hidden: [...g.hidden], solo: [...g.soloed] }));
+    return out;
+  }
+}"#).unwrap();
+    let mut values = fixture(true, json!({"graph": true}), updates("current", "current"));
+    values.insert("focused".into(), json!({"space":"s1","tab":"tab1","pane":"p1","terminal":"t1","agent":null,"shown":null,"cwd":repo}));
+    values.insert("panes".into(), json!([{"pane":"p1","terminal":"t1","tab":"tab1","title":"x","cwd":repo,"branch":"master","status":"idle","app":null,"program":null,"focused":true,"zoomed":false}]));
+    let calls = Rc::new(RefCell::new(Calls { real_git: true, ..Calls::default() }));
+    gpui_shell::policy::set_default(
+        Policy::new()
+            .with_storage_path(staged.0.join("store.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(values, calls.clone())).unwrap(),
+    );
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+    let mut context = gpui::VisualTestContext::from_window(*window.deref(), cx);
+    context.simulate_resize(size(px(1500.), px(860.)));
+    let listed = |context: &mut gpui::VisualTestContext| {
+        for _ in 0..12 {
+            context.executor().advance_clock(std::time::Duration::from_millis(30));
+            context.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx) });
+            context.run_until_parked();
+        }
+        let last = calls.borrow().effects.iter().rev().find(|(name, _)| name == "notify").map(|(_, args)| args[0].clone()).unwrap();
+        let state: Value = serde_json::from_str(last.as_str().unwrap()).unwrap();
+        let mut subjects: Vec<String> = state["commits"].as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_owned()).collect();
+        subjects.sort();
+        (subjects, state)
+    };
+    let pick = |t: u32, action: &str, branch: &str| {
+        calls.borrow_mut().shared.insert("test.go".into(), json!({"t": t, "action": action, "ref": {"type": "branch", "name": branch, "ref": format!("refs/heads/{branch}")}}));
+    };
+    let (subjects, state) = listed(&mut context);
+    assert_eq!(subjects, ["base", "only a", "only b"], "{state}");
+    pick(1, "hide", "feat/a");
+    let (subjects, state) = listed(&mut context);
+    assert_eq!(subjects, ["base", "only b"], "after Hide: {state}");
+    pick(2, "solo", "feat/a");
+    let (subjects, state) = listed(&mut context);
+    assert_eq!(subjects, ["base", "only a"], "after Solo: {state}");
+    pick(3, "solo", "feat/b");
+    let (subjects, state) = listed(&mut context);
+    assert_eq!(subjects, ["base", "only a", "only b"], "after Solo of two: {state}");
+    std::fs::remove_dir_all(repo).unwrap();
 }
 
 #[gpui::test]
