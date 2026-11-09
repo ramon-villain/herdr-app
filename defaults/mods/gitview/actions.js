@@ -4,11 +4,38 @@ import { commitUrl, compareUrl } from "./refmenu.js";
 
 const firstLine = (text) => (text ?? "").trim().split("\n")[0] || "no output";
 
+// git push prints "To <url>" before the refusal, and the url says nothing about why.
+const PUSH_KINDS = [
+  ["stale", /stale info/, "Rejected: the remote branch moved since it was last fetched"],
+  ["behind", /non-fast-forward|fetch first|Updates were rejected/, "Rejected: the remote has commits this branch lacks (rebased?)"],
+  ["hook", /remote rejected|hook declined|protected branch|GH006|GH013/, "Rejected by a hook or rule on the remote"],
+  ["auth", /Authentication failed|Permission denied|could not read Username|Invalid username or password|Repository not found|returned error: 40[13]/, "Not signed in, or not allowed to push"],
+  ["network", /Could not resolve host|Connection (timed out|refused|reset)|Network is unreachable|early EOF|timed out|unable to access/, "Could not reach the remote"],
+];
+
+/** Reads a failed push's stderr into its kind, the plain words for it and the git line that says so. */
+export function explainPush(stderr) {
+  const lines = (stderr ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("To "));
+  for (const [kind, re, summary] of PUSH_KINDS) {
+    const line = lines.find((l) => re.test(l));
+    if (line) return { kind, summary, line };
+  }
+  return { kind: "other", summary: "Push failed", line: lines.find((l) => /rejected|error|fatal/i.test(l)) ?? lines[0] ?? "no output" };
+}
+
 /**
- * @param {{ exec: Function, openLink: (url: string) => void, copy: (text: string) => void, notify: (n: object) => void, inbox: string }} host
- * `inbox` is the path of Firstmate's bin/fm-inbox.sh.
+ * @param {{ exec: Function, openLink: (url: string) => void, copy: (text: string) => void, notify: (n: object) => void, inbox: string, pushFailed?: (failure: object) => void }} host
+ * `inbox` is the path of Firstmate's bin/fm-inbox.sh. `pushFailed` keeps the failure that the error toast's `gitview.pushError` action opens.
  */
-export function createActions({ exec, openLink, copy, notify, inbox }) {
+export function createActions({ exec, openLink, copy, notify, inbox, pushFailed = () => {} }) {
+  /** The toast stays until dismissed. `push` is what the branch menu saw of the remote branch: a lease for the force push only exists with it. */
+  function reportPush({ root, on, remote, branch, sha, push, lease }, pushed) {
+    const output = (pushed.stderr ?? "").trim() || (pushed.stdout ?? "").trim() || "no output";
+    const why = explainPush(output);
+    pushFailed({ ...why, output, root, on, remote, branch, sha, push: why.kind === "behind" && !lease ? push : null });
+    notify({ title: `Push of ${branch} failed`, body: `${why.summary} · ${why.line}`, level: "error", timeout: 86400000, action: { name: "gitview.pushError" } });
+  }
+
   return {
     copyText(text, what) {
       copy(text);
@@ -18,13 +45,13 @@ export function createActions({ exec, openLink, copy, notify, inbox }) {
     copyCommitLink(web, sha) { this.copyText(commitUrl(web, sha), "link to the commit"); },
 
     /** Pushes the branch to origin with its upstream set, then opens GitHub's page for a pull request from it. The only write to the repo. */
-    async pushAndCompare({ root, on, branch, web, base }) {
+    async pushAndCompare({ root, on, branch, web, base, sha, push }) {
       notify({ title: `Pushing ${branch}`, body: "git push -u origin", level: "info", timeout: 2500 });
       let pushed;
       try { pushed = await exec("git", ["push", "-u", "origin", branch], { cwd: root, on, timeout: 120000 }); }
       catch (e) { pushed = { code: -1, stderr: String(e) }; }
       if (pushed.code !== 0) {
-        notify({ title: `Push of ${branch} failed`, body: firstLine(pushed.stderr), level: "error" });
+        reportPush({ root, on, remote: "origin", branch, sha, push }, pushed);
         return false;
       }
       openLink(compareUrl(web, base, branch));
@@ -35,15 +62,14 @@ export function createActions({ exec, openLink, copy, notify, inbox }) {
      * Pushes `branch` to the branch of that name on `remote`. With `lease`, the remote tip the caller saw, it is a force push that
      * the remote refuses when someone moved that branch since. Resolves with whether it went through.
      */
-    async pushBranch({ root, on, remote, branch, lease }) {
+    async pushBranch({ root, on, remote, branch, lease, sha, push }) {
       notify({ title: `Pushing ${branch}`, body: `git push ${remote}`, level: "info", timeout: 2500 });
       const args = ["push", ...(lease ? [`--force-with-lease=${branch}:${lease}`] : []), remote, branch];
       let pushed;
       try { pushed = await exec("git", args, { cwd: root, on, timeout: 120000 }); }
       catch (e) { pushed = { code: -1, stderr: String(e) }; }
       if (pushed.code !== 0) {
-        const lines = (pushed.stderr ?? "").split("\n");
-        notify({ title: `Push of ${branch} failed`, body: firstLine(lines.find((l) => /rejected|error|fatal/i.test(l)) ?? pushed.stderr), level: "error" });
+        reportPush({ root, on, remote, branch, sha, push, lease }, pushed);
         return false;
       }
       notify({ title: `Pushed ${branch}`, body: `${remote}/${branch}`, level: "success", timeout: 3000 });
