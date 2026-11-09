@@ -20,13 +20,13 @@ const scratch: string[] = [];
 afterAll(async () => { for (const dir of scratch) await rm(dir, { recursive: true, force: true }); });
 
 /** A folder with fake programs on a PATH of their own: each one logs its arguments to `calls` and prints what the test gave it. */
-async function fakes(programs: Record<string, { out?: string; code?: number }>) {
+async function fakes(programs: Record<string, { out?: string; err?: string; code?: number }>) {
   const dir = await mkdtemp(join(tmpdir(), "refmenu-"));
   scratch.push(dir);
   const bin = join(dir, "bin"), calls = join(dir, "calls");
   await mkdir(bin);
-  for (const [name, { out = "", code = 0 }] of Object.entries(programs)) {
-    await writeFile(join(bin, name), `#!/bin/sh\nprintf '%s %s\\n' "${name}" "$*" >> "${calls}"\nprintf '%s' '${out}'\nexit ${code}\n`);
+  for (const [name, { out = "", err = "", code = 0 }] of Object.entries(programs)) {
+    await writeFile(join(bin, name), `#!/bin/sh\nprintf '%s %s\\n' "${name}" "$*" >> "${calls}"\nprintf '%s' '${out}'\nprintf '%s' '${err}' >&2\nexit ${code}\n`);
     await chmod(join(bin, name), 0o755);
   }
   const exec = async (command: string, args: string[] = [], options: { cwd?: string; env?: Record<string, string> } = {}) => {
@@ -202,13 +202,14 @@ test("Ask firstmate on a branch or a commit files a note with the repo, the ref 
 // ---- push and create PR: only on a click, through a fake git
 
 function actionsOn(f: Awaited<ReturnType<typeof fakes>>) {
-  const seen = { opened: [] as string[], copied: [] as string[], notes: [] as any[] };
+  const seen = { opened: [] as string[], copied: [] as string[], notes: [] as any[], failures: [] as any[] };
   const actions = createActions({
     exec: (command: string, args: string[], options: any) => f.exec(command, args, options),
     openLink: (url: string) => seen.opened.push(url),
     copy: (text: string) => seen.copied.push(text),
     notify: (n: any) => seen.notes.push(n),
     inbox: join(f.dir, "bin", "fm-inbox.sh"),
+    pushFailed: (failure: any) => seen.failures.push(failure),
   });
   return { actions, seen };
 }
@@ -227,6 +228,75 @@ test("a failed push opens nothing and says why", async () => {
   expect(await actions.pushAndCompare({ root: f.dir, on: null, branch: "feat/x", web: "https://github.com/o/r", base: "master" })).toBe(false);
   expect(seen.opened).toEqual([]);
   expect(seen.notes.at(-1)).toMatchObject({ level: "error", title: "Push of feat/x failed" });
+});
+
+const TIP = "b".repeat(40), SHA = "c".repeat(40);
+const seenRemote = { remote: "origin", tip: TIP, ahead: 1, behind: 3 };
+
+async function failedPush(err: string, extra: Record<string, unknown> = {}) {
+  const f = await fakes({ git: { code: 1, err } });
+  const { actions, seen } = actionsOn(f);
+  const args = { root: f.dir, on: null, branch: "feat/x", sha: SHA, push: seenRemote };
+  expect(await actions.pushBranch({ ...args, remote: "origin", ...extra })).toBe(false);
+  return { note: seen.notes.at(-1), failure: seen.failures.at(-1), f };
+}
+
+test("a rebased branch is rejected as behind: the toast says so, never shows the To line, and stays until clicked", async () => {
+  const output = ["To https://github.com/o/r.git", " ! [rejected]        feat/x -> feat/x (non-fast-forward)", "error: failed to push some refs to https://github.com/o/r.git", "hint: Updates were rejected because the tip of your current branch is behind"].join("\n");
+  const { note, failure } = await failedPush(output);
+  expect(note).toMatchObject({ level: "error", title: "Push of feat/x failed", action: { name: "gitview.pushError" } });
+  expect(note.timeout).toBeGreaterThan(60 * 60 * 1000);
+  expect(note.body).toBe("Rejected: the remote has commits this branch lacks (rebased?) · ! [rejected]        feat/x -> feat/x (non-fast-forward)");
+  expect(note.body).not.toContain("To https");
+  expect(failure).toMatchObject({ kind: "behind", output, branch: "feat/x", sha: SHA, push: seenRemote });
+});
+
+test("a hook rejection says the remote refused it and keeps the hook's line", async () => {
+  const { note, failure } = await failedPush(["To https://github.com/o/r.git", " ! [remote rejected] feat/x -> feat/x (pre-receive hook declined)", "error: failed to push some refs"].join("\n"));
+  expect(note.body).toBe("Rejected by a hook or rule on the remote · ! [remote rejected] feat/x -> feat/x (pre-receive hook declined)");
+  expect(failure).toMatchObject({ kind: "hook", push: null });
+});
+
+test("an authentication failure says so, with git's line", async () => {
+  const { note, failure } = await failedPush("remote: Invalid username or password.\nfatal: Authentication failed for https://github.com/o/r.git/");
+  expect(note.body).toBe("Not signed in, or not allowed to push · remote: Invalid username or password.");
+  expect(failure.kind).toBe("auth");
+});
+
+test("a network failure says the remote could not be reached", async () => {
+  const { note, failure } = await failedPush("fatal: unable to access https://github.com/o/r.git/: Could not resolve host: github.com");
+  expect(note.body).toContain("Could not reach the remote · fatal: unable to access");
+  expect(failure.kind).toBe("network");
+});
+
+test("an error git has no name for still shows its own error line, not the To line", async () => {
+  const { note, failure } = await failedPush("To https://github.com/o/r.git\nfatal: something new broke");
+  expect(note.body).toBe("Push failed · fatal: something new broke");
+  expect(failure).toMatchObject({ kind: "other", output: "To https://github.com/o/r.git\nfatal: something new broke" });
+});
+
+test("a failure to start git is reported with the error text", async () => {
+  const { actions, seen } = actionsOn({ exec: async () => { throw new Error("spawn git ENOENT"); }, dir: "/x" } as any);
+  expect(await actions.pushBranch({ root: "/x", on: null, remote: "origin", branch: "feat/x" })).toBe(false);
+  expect(seen.failures.at(-1).output).toContain("spawn git ENOENT");
+});
+
+test("Force push (with lease) leases the remote tip the menu saw, and a refused lease offers no second force", async () => {
+  const { failure, f } = await failedPush(" ! [rejected]        feat/x -> feat/x (stale info)", { lease: TIP });
+  expect(await f.calls()).toEqual([`git push --force-with-lease=feat/x:${TIP} origin feat/x`]);
+  expect(failure).toMatchObject({ kind: "stale", push: null });
+  const ok = await fakes({ git: {} });
+  const { actions, seen } = actionsOn(ok);
+  expect(await actions.pushBranch({ root: ok.dir, on: null, remote: "origin", branch: "feat/x", lease: TIP })).toBe(true);
+  expect(seen.notes.at(-1)).toMatchObject({ level: "success", title: "Pushed feat/x" });
+});
+
+test("Push and create PR reports a rebased branch the same way and keeps what the menu saw for the force push", async () => {
+  const f = await fakes({ git: { code: 1, err: " ! [rejected]        feat/x -> feat/x (fetch first)" } });
+  const { actions, seen } = actionsOn(f);
+  expect(await actions.pushAndCompare({ root: f.dir, on: null, branch: "feat/x", web: "https://github.com/o/r", base: "master", sha: SHA, push: seenRemote })).toBe(false);
+  expect(seen.failures.at(-1)).toMatchObject({ kind: "behind", remote: "origin", sha: SHA, push: seenRemote });
+  expect(seen.opened).toEqual([]);
 });
 
 test("copying puts the text on the clipboard and says what was copied", () => {

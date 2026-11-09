@@ -1,6 +1,6 @@
 import { View } from "gpui-kit";
 import { InputState, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, window, theme, run, props as modProps, openOverlay, closeOverlay, shared, setShared, notify } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, window, theme, settings, run, props as modProps, openOverlay, closeOverlay, shared, setShared, notify, nextCommand } from "herdr";
 import { createReader, diffRows } from "./git.js";
 import { findKey, fileKey } from "./model.js";
 import { renderPanel } from "./views.js";
@@ -8,7 +8,7 @@ import { Graph } from "./graph.js";
 import { renderGraphTab } from "./graphview.js";
 import { createActions } from "./actions.js";
 import { compareUrl, branchOf, menuHeight, menuKey, MENU_WIDTH } from "./refmenu.js";
-import { renderRefMenu } from "./popup.js";
+import { renderRefMenu, renderPushError } from "./popup.js";
 
 const REFRESH_MS = 10000;
 const WORKERS = 3;
@@ -37,6 +37,7 @@ export default class GitView extends View {
   init(_props, cx) {
     this.git = createReader({ exec, readTextFile });
     if (modProps()?.menu) return this.initMenu(cx);
+    if (modProps()?.failure) return this.initPushError(cx);
     if (modProps()?.graph) return this.initGraph(cx);
     this.mode = "changes";
     this.snap = null; this.error = null; this.rows = []; this.diff = []; this.diffWidth = 300;
@@ -76,6 +77,28 @@ export default class GitView extends View {
     this.graph.load(cx);
     cx.timer.every(15000, (cx) => this.graph.poll(cx).catch(() => null));
     cx.timer.every(400, (cx) => { if (this.graph.wantMore) this.graph.more(cx); });
+    cx.spawn(async () => {
+      for (;;) { if (await nextCommand() === "pushError") this.showPushError(); }
+    });
+  }
+
+  // ---- a failed push: the toast's click opens the whole git output, with the way to Copy it or force the push
+
+  showPushError() {
+    const failure = this.pushFailure;
+    if (failure) openOverlay({ mod: "gitview", kind: "dialog", width: 640, props: { failure, tab: this.id } });
+  }
+
+  initPushError() {
+    this.failure = modProps().failure;
+  }
+
+  /** Hands the confirm step to the tab that pushed, which names the branch and both shas before anything is forced. */
+  forcePushFromError(cx) {
+    const { failure, tab, overlay } = modProps();
+    closeOverlay(overlay);
+    setShared(MENU_REQUEST, { t: Date.now() + Math.random(), tab, action: "forcePush", ref: { name: failure.branch, sha: failure.sha, push: failure.push }, root: failure.root, on: failure.on });
+    cx.notify();
   }
 
   // ---- the branch menu: a popup opened on a right-click, which answers through shared state
@@ -119,7 +142,7 @@ export default class GitView extends View {
   }
 
   actions(cx) {
-    return createActions({ exec, openLink: (url) => this.openLink(url), copy: (text) => cx.write_to_clipboard(text), notify, inbox: modProps()?.inbox ?? INBOX });
+    return createActions({ exec, openLink: (url) => this.openLink(url), copy: (text) => cx.write_to_clipboard(text), notify, inbox: modProps()?.inbox ?? INBOX, pushFailed: (failure) => { this.pushFailure = failure; } });
   }
 
   async act({ action, ref, web, base, root, on }, cx) {
@@ -132,9 +155,9 @@ export default class GitView extends View {
     else if (action === "copyLink") actions.copyCommitLink(web, ref.sha);
     else if (action === "openPr") this.openLink(ref.pr.url);
     else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
-    else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base });
-    else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name })) graph.load(cx); }
-    else if (action === "forcePush") graph.confirmPush = { root, on, name: ref.name, ...ref.push };
+    else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base, sha: ref.sha, push: ref.push });
+    else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name, sha: ref.sha, push: ref.push })) graph.load(cx); }
+    else if (action === "forcePush") graph.confirmPush = { root, on, name: ref.name, sha: ref.sha, ...ref.push };
     cx.notify();
   }
 
@@ -357,6 +380,11 @@ export default class GitView extends View {
 
   render(cx) {
     if (this.menuState) return this.renderMenu(cx);
+    if (this.failure) return renderPushError(this.failure, theme(), settings().font_family ?? "JetBrains Mono", {
+      copy: (cx) => this.actions(cx).copyText(this.failure.output, "git output"),
+      force: (cx) => this.forcePushFromError(cx),
+      close: () => closeOverlay(modProps().overlay),
+    });
     if (this.graph) {
       this.takeRequest(cx);
       return renderGraphTab(this.graph, this, theme());

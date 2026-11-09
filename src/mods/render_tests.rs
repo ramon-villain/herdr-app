@@ -506,9 +506,9 @@ fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_grap
         assert!(tree.contains(want), "a rebased commit lacks {want}: {tree}");
     }
     assert!(!tree.contains("graph-force-push"), "no force push is asked before the menu picks it: {tree}");
-    let confirm = format!("{state} g.confirmPush = {{ root: '/fixture/project', name: 'feat/x', remote: 'origin', tip: 'c'.repeat(40), ahead: 1, behind: 2 }};");
+    let confirm = format!("{state} g.confirmPush = {{ root: '/fixture/project', name: 'feat/x', sha: 'a'.repeat(40), remote: 'origin', tip: 'c'.repeat(40), ahead: 1, behind: 2 }};");
     let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&confirm)).unwrap();
-    for want in ["origin/feat/x has 2 commits that feat/x lacks", "graph-force-push", "graph-force-cancel"] {
+    for want in ["Replace origin/feat/x (ccccccc) with feat/x (aaaaaaa)", "drops 2 remote commits", "graph-force-push", "graph-force-cancel"] {
         assert!(tree.contains(want), "force push bar lacks {want}: {tree}");
     }
 }
@@ -736,6 +736,21 @@ fn gitview_branch_menu_popup_lists_what_can_be_done_with_the_ref(cx: &mut TestAp
         assert!(tree.contains(want), "two-ref menu lacks {want}: {tree}");
     }
     assert!(!tree.contains("Push and create PR"), "an open pull request needs no new one: {tree}");
+}
+
+#[gpui::test]
+fn gitview_push_error_dialog_shows_why_and_all_of_gits_output(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let output = "To https://github.com/o/r.git\n ! [rejected]        feat/x -> feat/x (non-fast-forward)\nerror: failed to push some refs";
+    let failure = |push: Value| json!({"failure": {"kind": "behind", "summary": "Rejected: the remote has commits this branch lacks (rebased?)", "line": "! [rejected]        feat/x -> feat/x (non-fast-forward)", "output": output, "branch": "feat/x", "sha": "a".repeat(40), "push": push, "root": "/r", "on": null}, "tab": "t1", "overlay": "o1"});
+    let push = json!({"remote": "origin", "tip": "b".repeat(40), "ahead": 1, "behind": 3});
+    let tree = describe(cx, &staged, "mods/gitview", true, failure(push), updates("current", "current"), None).unwrap();
+    for want in ["Push of feat/x failed", "the remote has commits this branch lacks", "To https://github.com/o/r.git", "error: failed to push some refs", "Copy output", "Force push (with lease)", "gv-push-force"] {
+        assert!(tree.contains(want), "push error dialog lacks {want}: {tree}");
+    }
+    let tree = describe(cx, &staged, "mods/gitview", true, failure(Value::Null), updates("current", "current"), None).unwrap();
+    assert!(tree.contains("Copy output") && !tree.contains("Force push"), "no remote tip, no force push: {tree}");
 }
 
 /// A mod's localStorage write lands on the executor; one that lands after the
