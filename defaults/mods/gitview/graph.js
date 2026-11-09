@@ -50,7 +50,7 @@ export class Graph {
   /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
   constructor(git, locate, scroll, projects = null, leftScroll = null, filesScroll = null) {
     this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll; this.filesScroll = filesScroll;
-    this.ask = null; this.pushes = new Map(); this.confirmPush = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
+    this.ask = null; this.pushes = new Map(); this.confirmPush = null; this.confirmDelete = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
     this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
     this.worktree = null; this.ab = new Map(); this.wt = new Map(); this.wipSnap = null;
@@ -283,7 +283,7 @@ export class Graph {
       this.worktree = null; this.info = null; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
       this.selected = null; this.detail = null; this.file = null; this.view = null; this.details.clear(); this.views.clear();
       this.hidden.clear(); this.soloed.clear(); this.web = null; this.pick = null; this.ab = new Map(); this.wt = new Map(); this.signature = null;
-      this.pushes = new Map(); this.confirmPush = null;
+      this.pushes = new Map(); this.confirmPush = null; this.confirmDelete = null;
       this.reset();
       this.later(cx, (cx) => this.load(cx)).catch(() => null);
     }
@@ -692,6 +692,13 @@ export class Graph {
     while (todo.length) for (const kid of this.kids.children.get(todo.pop()) ?? []) if (!reach.has(kid)) { reach.add(kid); todo.push(kid); }
     for (const h of info.heads) if (reach.has(h.sha)) names.add(h.name);
     return found;
+  }
+
+  /** Opens the confirmation to delete a local branch, with what the captain needs to judge it: commits only it has, and whether origin has the branch. */
+  async askDelete({ root, on, name, sha }) {
+    const base = this.info?.base ?? null;
+    const unmerged = await this.git.unmerged(root, on, name, base);
+    this.confirmDelete = { root, on, name, sha, base, unmerged, onOrigin: (this.info?.remotes ?? []).some((r) => r.name === `origin/${name}`) };
   }
 
   /** Asks the catalog in the background which marked branches have a card, at most every two minutes per branch. */

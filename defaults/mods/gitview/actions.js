@@ -1,6 +1,6 @@
 // What the branch menu and the diff's send button do beyond reading. Each one runs only from a click.
 // The host's calls are passed in, so scripts/refmenu.test.ts drives them with a fake git, gh and fm-inbox.sh.
-import { commitUrl, compareUrl } from "./refmenu.js";
+import { CATALOG, commitUrl, compareUrl } from "./refmenu.js";
 
 const firstLine = (text) => (text ?? "").trim().split("\n")[0] || "no output";
 
@@ -73,6 +73,32 @@ export function createActions({ exec, openLink, copy, notify, inbox, pushFailed 
         return false;
       }
       notify({ title: `Pushed ${branch}`, body: `${remote}/${branch}`, level: "success", timeout: 3000 });
+      return true;
+    },
+
+    /**
+     * Deletes the local branch (never the remote one) when it is still at `sha`, then asks the catalog to archive every card that holds it.
+     * The toast stays until dismissed and carries the command that restores the branch. Resolves with whether the branch went.
+     */
+    async deleteBranch({ root, on, name, sha }) {
+      const run = (args) => exec("git", args, { cwd: root, on, timeout: 15000 }).catch((e) => ({ code: -1, stdout: "", stderr: String(e) }));
+      const tip = (await run(["rev-parse", "--verify", "-q", `refs/heads/${name}`])).stdout.trim();
+      if (tip !== sha) {
+        notify({ title: `Kept ${name}`, body: tip ? `it moved to ${tip.slice(0, 7)} since you looked` : "it is already gone", level: "error", timeout: 8000 });
+        return false;
+      }
+      const deleted = await run(["branch", "-D", name]);
+      if (deleted.code !== 0) {
+        notify({ title: `Could not delete ${name}`, body: firstLine(deleted.stderr || deleted.stdout), level: "error", timeout: 86400000 });
+        return false;
+      }
+      let archived = null;
+      try {
+        const r = await exec("curl", ["-s", "-m", "10", "-X", "POST", "-H", `Origin: ${CATALOG}`, "-H", "Content-Type: application/json", "-d", JSON.stringify({ branch: name }), `${CATALOG}/api/branch-archive`], { timeout: 15000 });
+        archived = JSON.parse(r.stdout).archived;
+      } catch { /* the catalog is down or refused, the toast says so */ }
+      const cards = archived ? `${archived.length} ${archived.length === 1 ? "card" : "cards"} archived` : "cards not archived (catalog did not answer)";
+      notify({ title: `Deleted ${name}`, body: `${cards} · restore: git -C ${root} branch ${name} ${sha}`, level: archived ? "success" : "warning", timeout: 86400000 });
       return true;
     },
 

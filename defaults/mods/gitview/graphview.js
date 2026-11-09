@@ -185,9 +185,16 @@ function askBar(graph, view, t) {
     .child(pill(t, "graph-ask-close", "✕", false, (_e, cx) => { graph.ask = null; cx.notify(); }));
 }
 
-/** The box over the bottom of the tab that Force push opens: what the push replaces, and the way to go ahead or back out. */
+/** The box over the bottom of the tab that Force push and Delete branch open: what the action replaces or drops, and the way to go ahead or back out. */
 function confirmBar(graph, view, t) {
-  const c = graph.confirmPush;
+  const c = graph.confirmPush, d = graph.confirmDelete;
+  if (d) {
+    const n = d.unmerged === null ? "An unknown number of commits are" : `${d.unmerged} ${d.unmerged === 1 ? "commit is" : "commits are"}`;
+    return shield(h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(`Delete ${d.name} (${d.sha.slice(0, 7)})? ${n} not in ${d.base ?? "the base"}, origin ${d.onOrigin ? "has" : "does not have"} it. Only the local branch goes, its catalog cards are archived.`))
+      .child(pill(t, "graph-delete", view.pushing ? "Deleting…" : "Delete", false, (_e, cx) => view.deleteNow(cx)))
+      .child(pill(t, "graph-delete-cancel", "Cancel", false, (_e, cx) => { graph.confirmDelete = null; cx.notify(); }));
+  }
   return shield(h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
     .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(`Replace ${c.remote}/${c.name} (${c.tip.slice(0, 7)}) with ${c.name} (${c.sha.slice(0, 7)})? It drops ${c.behind} remote ${c.behind === 1 ? "commit" : "commits"}.`))
     .child(pill(t, "graph-force-push", view.pushing ? "Pushing…" : "Force push", false, (_e, cx) => view.forcePush(cx)))
@@ -361,5 +368,5 @@ export function renderGraphTab(graph, view, t) {
     .when(graph.picking && Boolean(graph.info), (e) => e.child(worktreeMenu(graph, t)))
     .when(graph.pickingRepo, (e) => e.child(repoMenu(graph, t)))
     .when(Boolean(graph.ask), (e) => e.child(askBar(graph, view, t)))
-    .when(Boolean(graph.confirmPush), (e) => e.child(confirmBar(graph, view, t)));
+    .when(Boolean(graph.confirmPush || graph.confirmDelete), (e) => e.child(confirmBar(graph, view, t)));
 }
