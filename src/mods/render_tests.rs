@@ -499,6 +499,12 @@ fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_grap
     for want in ["graph-send-pick", "Send to firstmate", "2 lines", "graph-send-close"] {
         assert!(tree.contains(want), "send bar lacks {want}: {tree}");
     }
+    assert!(!tree.contains("· committed"), "an unrebased commit shows one date: {tree}");
+    let rebased = format!("{state} g.detail.committed = g.detail.time + 3 * 86400000;");
+    let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&rebased)).unwrap();
+    for want in ["authored ", "· committed "] {
+        assert!(tree.contains(want), "a rebased commit lacks {want}: {tree}");
+    }
     assert!(!tree.contains("graph-force-push"), "no force push is asked before the menu picks it: {tree}");
     let confirm = format!("{state} g.confirmPush = {{ root: '/fixture/project', name: 'feat/x', remote: 'origin', tip: 'c'.repeat(40), ahead: 1, behind: 2 }};");
     let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&confirm)).unwrap();

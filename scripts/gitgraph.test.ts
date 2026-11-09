@@ -1185,3 +1185,16 @@ test("Push sends only the new commits, and a rebased branch needs the lease on t
   expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", lease: state.tip })).toBe(true);
   expect(await git(bare, "rev-parse", "feat")).toBe(await git(work, "rev-parse", "feat"));
 });
+
+test("a commit's detail carries the committer time beside the author time, which a rebase moves apart", async () => {
+  const { work } = await fixture();
+  await writeFile(join(work, "r.txt"), "r\n");
+  await git(work, "add", "-A");
+  await git(work, "commit", "--date=2020-01-01T10:00:00Z", "-m", "written in 2020, committed now");
+  const sha = await git(work, "rev-parse", "HEAD");
+  verbs.length = 0;
+  const detail = await reader.commit(work, sha, null);
+  expect(detail.time).toBe(Date.UTC(2020, 0, 1, 10));
+  expect(detail.committed).toBeGreaterThan(detail.time);
+  expect(verbs.filter((v) => v.includes("log") && v.includes("-1"))).toHaveLength(1);
+});
