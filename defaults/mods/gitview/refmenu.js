@@ -9,7 +9,7 @@ export function webUrl(remote) {
 
 const encodeRef = (name) => name.split("/").map(encodeURIComponent).join("/");
 
-const CATALOG = "http://catalog.localhost:8888";
+export const CATALOG = "http://catalog.localhost:8888";
 
 /** Firstmate's catalog page for a branch: it redirects to the card that names it and answers 404 when none does. */
 export const catalogUrl = (branch) => `${CATALOG}/branch/${encodeRef(branch)}`;
@@ -68,6 +68,7 @@ export function menuEntries(ref, web) {
     if (!open && pr?.state !== "MERGED") tail.push(ref.type === "branch" ? { id: "pushPr", label: "Push and create PR" } : { id: "createPr", label: "Create PR" });
   }
   if (!isTag) tail.push({ id: "openCard", label: "Open catalog card" });
+  if (ref.type === "branch") tail.push({ id: "deleteBranch", label: "Delete branch..." });
   if (tail.length) rows.push(null, ...tail);
   return rows;
 }

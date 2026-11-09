@@ -158,8 +158,31 @@ export default class GitView extends View {
     else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
     else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base, sha: ref.sha, push: ref.push });
     else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name, sha: ref.sha, push: ref.push })) graph.load(cx); }
+    else if (action === "deleteBranch") await this.askDelete({ root, on, name: ref.name, sha: ref.sha });
     else if (action === "forcePush") graph.confirmPush = { root, on, name: ref.name, sha: ref.sha, ...ref.push };
     cx.notify();
+  }
+
+  /** A branch a worktree has checked out cannot go; any other asks for confirmation first. */
+  async askDelete(branch) {
+    const held = this.graph.info.worktrees.find((w) => w.branch === branch.name);
+    if (held) notify({ title: `Kept ${branch.name}`, body: `it is checked out in ${held.path}`, level: "error", timeout: 8000 });
+    else await this.graph.askDelete(branch);
+  }
+
+  /** The delete the captain confirmed. */
+  deleteNow(cx) {
+    const c = this.graph.confirmDelete;
+    if (!c || this.pushing) return;
+    this.pushing = true;
+    cx.notify();
+    cx.spawn(async (task) => {
+      const deleted = await this.actions(task).deleteBranch(c);
+      this.graph.confirmDelete = null;
+      this.pushing = false;
+      if (deleted) this.graph.load(task);
+      task.notify();
+    });
   }
 
   /** The Force push the captain confirmed: it only goes through when the remote branch is still at the tip the confirmation showed. */

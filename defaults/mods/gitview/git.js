@@ -425,6 +425,13 @@ export function createReader({ exec, readTextFile }) {
     return refs.code === 0 && tags.code === 0 ? [refs, tags, stashes, worktrees, head].map((r) => r.stdout).join("\0") : null;
   }
 
+  /** How many commits of the local `branch` are not in `base`, or null when git cannot say. */
+  async function unmerged(root, on, branch, base) {
+    if (!base) return null;
+    const r = await git(root, on, ["rev-list", "--count", `${base}..refs/heads/${branch}`]);
+    return r.code === 0 ? Number(r.stdout.trim()) : null;
+  }
+
   /** The URL of origin, or null. */
   async function remoteUrl(root, on) {
     const r = await git(root, on, ["config", "--get", "remote.origin.url"]);
@@ -454,5 +461,5 @@ export function createReader({ exec, readTextFile }) {
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
   }
 
-  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests, hasCard };
+  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests, hasCard, unmerged };
 }

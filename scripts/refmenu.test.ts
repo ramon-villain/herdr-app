@@ -73,19 +73,19 @@ const labels = (rows: any[]) => rows.map((r) => (r ? r.label : "-"));
 
 test("a branch without a pull request offers Push and create PR beside the copies, solo and hide", () => {
   const rows = menuEntries({ type: "branch", name: "feat/x", sha: "a".repeat(40), pr: null }, "https://github.com/o/r");
-  expect(labels(rows)).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Push and create PR", "Open catalog card"]);
+  expect(labels(rows)).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Push and create PR", "Open catalog card", "Delete branch..."]);
   expect(rows.map((r) => r?.id)).toContain("pushPr");
 });
 
 test("a branch with an open pull request offers to open it and nothing to create", () => {
   const rows = menuEntries({ type: "branch", name: "x", sha: "s", pr: { number: 12, state: "OPEN" }, solo: true, hidden: true }, "https://github.com/o/r");
-  expect(labels(rows)).toEqual(["Unsolo", "Show", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Open PR #12", "Open catalog card"]);
+  expect(labels(rows)).toEqual(["Unsolo", "Show", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Open PR #12", "Open catalog card", "Delete branch..."]);
 });
 
 test("a closed pull request can be opened or replaced, a merged one only opened", () => {
   const web = "https://github.com/o/r";
-  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "CLOSED" } }, web)).slice(-3)).toEqual(["Open PR #4 (closed)", "Push and create PR", "Open catalog card"]);
-  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "MERGED" } }, web)).slice(-2)).toEqual(["Open PR #4 (merged)", "Open catalog card"]);
+  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "CLOSED" } }, web)).slice(-4)).toEqual(["Open PR #4 (closed)", "Push and create PR", "Open catalog card", "Delete branch..."]);
+  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "MERGED" } }, web)).slice(-3)).toEqual(["Open PR #4 (merged)", "Open catalog card", "Delete branch..."]);
 });
 
 test("a remote branch is already pushed, so it only creates the PR; a tag has no PR rows", () => {
@@ -96,8 +96,8 @@ test("a remote branch is already pushed, so it only creates the PR; a tag has no
 });
 
 test("without a GitHub origin the menu has no link or PR rows, and without a sha no sha rows", () => {
-  expect(labels(menuEntries({ type: "branch", name: "x", sha: "s", pr: null }, null))).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Ask firstmate...", "-", "Open catalog card"]);
-  expect(labels(menuEntries({ type: "branch", name: "x" }, "https://github.com/o/r")).slice(3)).toEqual(["Copy branch name", "Ask firstmate...", "-", "Push and create PR", "Open catalog card"]);
+  expect(labels(menuEntries({ type: "branch", name: "x", sha: "s", pr: null }, null))).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Ask firstmate...", "-", "Open catalog card", "Delete branch..."]);
+  expect(labels(menuEntries({ type: "branch", name: "x" }, "https://github.com/o/r")).slice(3)).toEqual(["Copy branch name", "Ask firstmate...", "-", "Push and create PR", "Open catalog card", "Delete branch..."]);
 });
 
 test("the popup keys move over the actions and wrap, Enter returns the action, Esc closes", () => {
@@ -107,7 +107,7 @@ test("the popup keys move over the actions and wrap, Enter returns the action, E
   expect(state.at).toBe(1);
   expect(menuKey(state, "enter", menu)).toMatchObject({ id: "hide" });
   menuKey(state, "up", menu); menuKey(state, "up", menu);
-  expect(state.at).toBe(5);
+  expect(state.at).toBe(6);
   expect(menuKey(state, "escape", menu)).toBe("close");
   expect(menuKey(state, "x", menu)).toBe(false);
   expect(menuHeight(menu)).toBeGreaterThan(menuHeight({ web: null, refs: [{ type: "tag", name: "t" }] }) - 1);
@@ -440,10 +440,10 @@ test.skipIf(!existsSync(REAL_INBOX))("a picked selection lands in a scratch FM_H
 test("a branch with commits its remote branch lacks offers Push, and a rebased one a Force push that needs confirming", () => {
   const web = "https://github.com/o/r";
   const ahead = menuEntries({ type: "branch", name: "x", sha: "s", pr: { number: 12, state: "OPEN" }, push: { remote: "origin", ahead: 2, behind: 0 } }, web);
-  expect(labels(ahead).slice(-3)).toEqual(["Push 2 commits to origin", "Open PR #12", "Open catalog card"]);
+  expect(labels(ahead).slice(-4)).toEqual(["Push 2 commits to origin", "Open PR #12", "Open catalog card", "Delete branch..."]);
   expect(ahead.find((r: any) => r?.id === "push")).toBeTruthy();
   const rebased = menuEntries({ type: "branch", name: "x", sha: "s", pr: null, push: { remote: "origin", ahead: 1, behind: 3 } }, null);
-  expect(labels(rebased).slice(-2)).toEqual(["Force push (with lease)", "Open catalog card"]);
+  expect(labels(rebased).slice(-3)).toEqual(["Force push (with lease)", "Open catalog card", "Delete branch..."]);
   const none = (push: any, type = "branch") => labels(menuEntries({ type, name: "x", sha: "s", push }, null)).join();
   expect(none({ remote: "origin", ahead: 0, behind: 2 })).not.toContain("push");
   expect(none(null)).not.toContain("push");
@@ -488,4 +488,56 @@ test("the detail panel names a marked branch once the catalog has answered, and 
   g.cards.get("feat").at -= 121000;
   g.probeCards(cx);
   expect(asked).toBe(3);
+});
+
+// ---- delete a branch: only the local one, then its cards
+
+test("only a local branch offers Delete branch", () => {
+  const ids = (ref: any) => menuEntries(ref, null).map((r: any) => r?.id);
+  expect(ids({ type: "branch", name: "x" })).toContain("deleteBranch");
+  expect(ids({ type: "remote", name: "origin/x" })).not.toContain("deleteBranch");
+  expect(ids({ type: "tag", name: "v1" })).not.toContain("deleteBranch");
+});
+
+test("the delete confirmation counts the commits master lacks and says whether origin has the branch", async () => {
+  const f = await fakes({ git: { out: "3\n" } });
+  expect(await createReader({ exec: f.exec }).unmerged(f.dir, null, "feat/x", "origin/master")).toBe(3);
+  expect((await f.calls())[0]).toContain("rev-list --count origin/master..refs/heads/feat/x");
+  expect(await createReader({ exec: f.exec }).unmerged(f.dir, null, "feat/x", null)).toBeNull();
+  const g = graphWith({ unmerged: async () => 3 });
+  g.info.remotes = [{ name: "origin/feat/x", sha: "s" }];
+  await g.askDelete({ root: "/r", on: null, name: "feat/x", sha: "s" });
+  expect(g.confirmDelete).toMatchObject({ name: "feat/x", unmerged: 3, onOrigin: true, base: "origin/master" });
+  await g.askDelete({ root: "/r", on: null, name: "local-only", sha: "s" });
+  expect(g.confirmDelete.onOrigin).toBe(false);
+});
+
+test("Delete branch removes the local branch at the confirmed sha, archives its cards and says how to restore it", async () => {
+  const sha = "a".repeat(40);
+  const f = await fakes({ git: { out: sha }, curl: { out: '{"archived":["a","b"]}' } });
+  const { actions, seen } = actionsOn(f);
+  expect(await actions.deleteBranch({ root: f.dir, on: null, name: "feat/x", sha })).toBe(true);
+  const calls = await f.calls();
+  expect(calls).toContain("git branch -D feat/x");
+  expect(calls.some((c) => c.startsWith("git push"))).toBe(false);
+  const post = calls.find((c) => c.startsWith("curl"))!;
+  expect(post).toContain("http://catalog.localhost:8888/api/branch-archive");
+  expect(post).toContain('{"branch":"feat/x"}');
+  expect(seen.notes[0]).toMatchObject({ title: "Deleted feat/x", level: "success" });
+  expect(seen.notes[0].body).toContain("2 cards archived");
+  expect(seen.notes[0].body).toContain(`branch feat/x ${sha}`);
+});
+
+test("Delete branch keeps a branch that moved, and says so when the catalog did not answer", async () => {
+  const sha = "a".repeat(40);
+  const moved = await fakes({ git: { out: "b".repeat(40) }, curl: {} });
+  const m = actionsOn(moved);
+  expect(await m.actions.deleteBranch({ root: moved.dir, on: null, name: "feat/x", sha })).toBe(false);
+  expect((await moved.calls()).some((c) => c.includes("branch -D"))).toBe(false);
+  expect(m.seen.notes[0]).toMatchObject({ title: "Kept feat/x", level: "error" });
+  const down = await fakes({ git: { out: sha }, curl: { out: "", code: 7 } });
+  const d = actionsOn(down);
+  expect(await d.actions.deleteBranch({ root: down.dir, on: null, name: "feat/x", sha })).toBe(true);
+  expect(d.seen.notes[0]).toMatchObject({ title: "Deleted feat/x", level: "warning" });
+  expect(d.seen.notes[0].body).toContain("cards not archived");
 });
