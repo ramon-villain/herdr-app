@@ -12,7 +12,14 @@ const x = (lane) => lane * LANE + 8;
 const line = (px, py, w, h, color) => div().absolute().left(px).top(py).w(w).h(h).bg(color);
 const clamp99 = (n) => (n > 99 ? "99+" : String(n));
 const shorten = (name, n) => (name.length > n ? `${name.slice(0, n - 1)}…` : name);
-const dateText = (ms) => new Date(ms).toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", minute: "2-digit" });
+const dateText = (ms, seconds) => new Date(ms).toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", minute: "2-digit", ...(seconds && { second: "2-digit" }) });
+
+/** When the commit was written, and when it was committed if that differs (a rebase or an amend moves the second). */
+function dateLine(d, c) {
+  if (d?.wip) return "not committed yet";
+  const time = d?.time ?? c?.time ?? 0;
+  return d?.committed && d.committed !== time ? `authored ${dateText(time, true)} · committed ${dateText(d.committed, true)}` : `authored ${dateText(time)}`;
+}
 
 // ---- the commit list
 
@@ -292,7 +299,7 @@ function detailPane(graph, view, t, items) {
     .child(div().h(34).flex_none().flex().items_center().justify_center().text_size(11).text_color(t.muted).border_b(1).border_color(t.border).child(d?.wip ? "uncommitted changes" : c?.stash ? `stash: ${c.stash}` : `commit: ${graph.selected.slice(0, 7)}`))
     .child(v_flex().flex_none().h(boxH).overflow_y_scrollbar().p(12).gap(6).child(div().text_size(14).child(subject)).when(Boolean(body), (e) => e.child(div().text_size(11).text_color(t.muted).child(body))))
     .child(h_flex().flex_none().px(12).py(8).gap(10).border_t(1).border_color(t.border).text_size(11)
-      .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(12).truncate().child(d?.author ?? c?.author ?? "")).child(div().text_color(t.muted).child(d?.wip ? "not committed yet" : `authored ${dateText(d?.time ?? c?.time ?? 0)}`)))
+      .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(12).truncate().child(d?.author ?? c?.author ?? "")).child(div().text_color(t.muted).child(dateLine(d, c))))
       .child(div().text_color(t.muted).flex_none().child(d?.parents.length ? `parent${d.parents.length > 1 ? "s" : ""}: ${d.parents.map((p) => p.slice(0, 6)).join(" ")}` : "root commit")))
     .child(h_flex().flex_none().px(12).h(30).items_center().gap(8).text_size(11).text_color(t.muted)
       .child(div().flex_1().child(d ? `${d.total} ${d.total === 1 ? "file" : "files"} changed` : graph.detailError ?? "Loading…"))

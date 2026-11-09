@@ -356,7 +356,7 @@ export function createReader({ exec, readTextFile }) {
    * file's add and del at 0; `stats` resolves after the line counts, which the slow numstat computes, are filled in.
    */
   async function commit(root, sha, on, parents) {
-    const meta = git(root, on, ["log", "-1", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%B", sha]);
+    const meta = git(root, on, ["log", "-1", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ct%x1f%B", sha]);
     const listFiles = (from) => {
       const names = git(root, on, ["diff", "--name-status", "-z", "--no-renames", from, sha]);
       names.catch(() => null);
@@ -366,7 +366,7 @@ export function createReader({ exec, readTextFile }) {
     let lists = parents ? listFiles(parents[0] ?? EMPTY_TREE) : null;
     const head = await meta;
     if (head.code !== 0) throw new Error(head.stderr);
-    const [hash, parentList, author, email, time, ...message] = head.stdout.split("\x1f");
+    const [hash, parentList, author, email, time, committed, ...message] = head.stdout.split("\x1f");
     const parent = parentList ? parentList.split(" ") : [], from = parent[0] ?? EMPTY_TREE;
     lists ??= listFiles(from);
     const names = await lists[0];
@@ -377,7 +377,7 @@ export function createReader({ exec, readTextFile }) {
       if (numstat.code !== 0) return;
       for (const [path, stat] of Object.entries(parseStats([numstat]))) Object.assign(byPath.get(path) ?? {}, stat);
     });
-    return { sha: hash, parents: parent, from, author, email, time: Number(time) * 1000, message: message.join("\x1f").trim(), files, total: listed.total, stats };
+    return { sha: hash, parents: parent, from, author, email, time: Number(time) * 1000, committed: Number(committed) * 1000, message: message.join("\x1f").trim(), files, total: listed.total, stats };
   }
 
   /** One file's change in a commit as display lines. `full` keeps the whole file, not just the hunks. */
