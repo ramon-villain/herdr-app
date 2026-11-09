@@ -153,6 +153,7 @@ pub(in crate::materialize) fn virtual_list(
     let handlers = ItemHandlers {
         click: behavior.on_item_click,
         secondary_click: behavior.on_item_secondary_click,
+        hover: behavior.on_item_hover,
     };
     let describe = move |_: &mut VirtualItems,
                          range: Range<usize>,
@@ -285,11 +286,13 @@ pub(in crate::materialize) struct ItemHandlers {
     pub(in crate::materialize) click: Option<CallbackId>,
     /// `on_item_secondary_click`: the key and the press, on a right press.
     pub(in crate::materialize) secondary_click: Option<CallbackId>,
+    /// `on_item_hover`: the key and whether the pointer is over the row.
+    pub(in crate::materialize) hover: Option<CallbackId>,
 }
 
 impl ItemHandlers {
     fn is_empty(self) -> bool {
-        self.click.is_none() && self.secondary_click.is_none()
+        self.click.is_none() && self.secondary_click.is_none() && self.hover.is_none()
     }
 }
 
@@ -360,6 +363,15 @@ fn clickable(
             });
     }
     row = row.child(item);
+    if let Some(callback) = handlers.hover {
+        let runtime = Rc::downgrade(runtime);
+        let key = key.clone();
+        row = row.on_hover(move |hovered, window, cx| {
+            if let Some(runtime) = runtime.upgrade() {
+                runtime.dispatch_item_hover(callback, &key, *hovered, window, cx);
+            }
+        });
+    }
     if let Some(callback) = handlers.click {
         let runtime = Rc::downgrade(runtime);
         let key = key.clone();
