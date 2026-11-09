@@ -140,10 +140,16 @@ function pill(t, id, text, on, onClick) {
     .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted).hover((s) => s.bg(t.hover)).on_click(onClick).child(text);
 }
 
+/** A bar drawn over the code takes the pointer itself: the list under it would read the same press as a click on a line and clear the picked lines. */
+function shield(bar) {
+  const stop = (_e, cx) => cx.stop_propagation();
+  return bar.on_mouse_down("left", stop).on_mouse_up("left", stop);
+}
+
 /** The find bar over the top right of the file pane: the text, the place of the current match among all, and the way to step and close. */
 function findBar(graph, view, t, total) {
   const at = Math.min(graph.find.at, total - 1);
-  return h_flex().absolute().top(8).right(18).h(32).px(8).gap(6).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12)
+  return shield(h_flex().absolute().top(8).right(18).h(32).px(8).gap(6).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
     .child(Input.new(view.findInput).w(180).h(24).px(6).rounded(4).bg(t.background).text_size(12).text_color(t.foreground))
     .child(div().w(54).flex_none().text_size(11).text_color(t.muted).child(graph.find.query ? (total ? `${at + 1} of ${total}` : "No results") : ""))
     .child(pill(t, "graph-find-prev", "↑", false, () => view.findStep(-1)))
@@ -154,7 +160,7 @@ function findBar(graph, view, t, total) {
 /** The bar over the bottom of the file pane while lines are picked: what is picked, an optional message, and the send. */
 function sendBar(graph, view, t) {
   const n = graph.pick.to - graph.pick.from + 1;
-  return h_flex().absolute().bottom(8).left(12).right(12).h(36).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12)
+  return shield(h_flex().absolute().bottom(8).left(12).right(12).h(36).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
     .child(div().flex_none().text_size(11).text_color(t.muted).child(`${n} ${n === 1 ? "line" : "lines"}`))
     .child(Input.new(view.noteInput).flex_1().min_w(0).h(24).px(6).rounded(4).bg(t.background).text_size(12).text_color(t.foreground))
     .child(pill(t, "graph-send-pick", view.sending ? "Sending…" : "Send to firstmate", false, (_e, cx) => view.sendPick(cx)))
@@ -164,7 +170,7 @@ function sendBar(graph, view, t) {
 /** The box over the bottom of the tab that a right-click on a ref or commit opens: what it is about, a message, and the send. */
 function askBar(graph, view, t) {
   const { ask } = graph;
-  return h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12)
+  return shield(h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
     .child(div().flex_none().max_w(200).truncate().text_size(11).text_color(t.muted).child(ask.type === "commit" ? ask.name : `${ask.type === "tag" ? "tag" : "branch"} ${ask.name}`))
     .child(Input.new(view.askInput).flex_1().min_w(0).h(24).px(6).rounded(4).bg(t.background).text_size(12).text_color(t.foreground))
     .child(pill(t, "graph-ask-send", view.sending ? "Sending…" : "Send to firstmate", false, (_e, cx) => view.sendAsk(cx)))

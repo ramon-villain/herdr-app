@@ -554,6 +554,62 @@ fn gitview_graph_diff_rows_lay_out_without_an_error(cx: &mut TestAppContext) {
     assert!(calls.borrow().unexpected.is_empty(), "{:?}", calls.borrow().unexpected);
 }
 
+/// The bar that sends picked lines to firstmate sits over the last rows of the diff. A press on its textbox must reach the
+/// textbox only: the list under it would read it as a click on a line and move or clear the picked lines.
+#[gpui::test]
+fn gitview_graph_send_bar_takes_the_press_instead_of_the_line_under_it(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    use std::ops::Deref;
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let setup = format!(
+        "{} g.run = 1e9; g.file = g.detail.files[0]; \
+         g.view = {{ rows: Array.from({{ length: 80 }}, (_, i) => ({{ kind: '', old: i + 1, next: i + 1, text: 'line ' + i }})) }}; \
+         g.clickPick(3, false); this.noteInput.on('focus', (_e, cx) => {{ this.focused = true; cx.notify(); }}); this.noteInput.on('change', (_e, cx) => cx.notify());",
+        graph_state()
+    );
+    std::fs::write(staged.0.join("main.js"), format!(r#"
+import Real from './mods/gitview/main.js';
+import {{ notify }} from 'herdr';
+export default class Scenario extends Real {{
+  init(props, cx) {{ super.init(props, cx); {setup} }}
+  render(cx) {{
+    const out = super.render(cx);
+    notify(JSON.stringify({{ pick: this.graph.pick, typed: this.noteInput.value(), focused: Boolean(this.focused) }}));
+    return out;
+  }}
+}}"#)).unwrap();
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    gpui_shell::policy::set_default(
+        Policy::new()
+            .with_storage_path(staged.0.join("store.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(fixture(true, json!({"graph": true}), updates("current", "current")), calls.clone())).unwrap(),
+    );
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+    let mut context = gpui::VisualTestContext::from_window(*window.deref(), cx);
+    context.simulate_resize(size(px(1500.), px(860.)));
+    context.update(|window, _| window.activate_window());
+    let state = |context: &mut gpui::VisualTestContext| {
+        for _ in 0..3 {
+            context.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx) });
+            context.run_until_parked();
+        }
+        let last = calls.borrow().effects.iter().rev().find(|(name, _)| name == "notify").map(|(_, args)| args[0].clone()).unwrap();
+        serde_json::from_str::<Value>(last.as_str().unwrap()).unwrap()
+    };
+    let before = state(&mut context);
+    assert_eq!(before["pick"], json!({"anchor": 3, "from": 3, "to": 3}), "{before}");
+    assert_eq!(before["typed"], json!(""));
+    context.simulate_click(gpui::point(px(700.), px(834.)), gpui::Modifiers::none());
+    context.simulate_input("hello");
+    let after = state(&mut context);
+    assert_eq!(after["pick"], before["pick"], "a press on the send bar changed the picked lines: {after}");
+    assert_eq!(after["focused"], json!(true), "the press did not reach the textbox: {after}");
+    assert_eq!(after["typed"], json!("hello"), "typing did not land in the textbox: {after}");
+}
+
 /// master holds `base`, `feat/a` adds `only a` and `feat/b` adds `only b`, so hiding or soloing a branch changes which commits the graph lists.
 fn graph_repo() -> PathBuf {
     let dir = PathBuf::from(format!("/var/tmp/herdr-graph-repo-{}", std::process::id()));
