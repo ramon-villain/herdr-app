@@ -31,6 +31,25 @@ export function createActions({ exec, openLink, copy, notify, inbox }) {
       return true;
     },
 
+    /**
+     * Pushes `branch` to `remoteBranch` on `remote`. With `lease`, the remote tip the caller saw, it is a force push that
+     * the remote refuses when someone moved that branch since. Resolves with whether it went through.
+     */
+    async pushBranch({ root, on, remote, branch, remoteBranch, lease }) {
+      notify({ title: `Pushing ${branch}`, body: `git push ${remote}`, level: "info", timeout: 2500 });
+      const args = ["push", ...(lease ? [`--force-with-lease=${remoteBranch}:${lease}`] : []), remote, remoteBranch === branch ? branch : `${branch}:${remoteBranch}`];
+      let pushed;
+      try { pushed = await exec("git", args, { cwd: root, on, timeout: 120000 }); }
+      catch (e) { pushed = { code: -1, stderr: String(e) }; }
+      if (pushed.code !== 0) {
+        const lines = (pushed.stderr ?? "").split("\n");
+        notify({ title: `Push of ${branch} failed`, body: firstLine(lines.find((l) => /rejected|error|fatal/i.test(l)) ?? pushed.stderr), level: "error" });
+        return false;
+      }
+      notify({ title: `Pushed ${branch}`, body: `${remote}/${remoteBranch}`, level: "success", timeout: 3000 });
+      return true;
+    },
+
     /** Files one captain note through fm-inbox.sh, the queue the browser extension's notes end in. Resolves with the note's id. */
     async sendNote(requestId, body) {
       const r = await exec(inbox, ["note", "--request-id", requestId, "--", body], { timeout: 20000 });

@@ -133,7 +133,24 @@ export default class GitView extends View {
     else if (action === "openPr") this.openLink(ref.pr.url);
     else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
     else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base });
+    else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name, remoteBranch: ref.push.branch })) graph.load(cx); }
+    else if (action === "forcePush") graph.confirmPush = { root, on, name: ref.name, ...ref.push };
     cx.notify();
+  }
+
+  /** The Force push the captain confirmed: it only goes through when the remote branch is still at the tip the confirmation showed. */
+  forcePush(cx) {
+    const c = this.graph.confirmPush;
+    if (!c || this.pushing) return;
+    this.pushing = true;
+    cx.notify();
+    cx.spawn(async (task) => {
+      const pushed = await this.actions(task).pushBranch({ root: c.root, on: c.on, remote: c.remote, branch: c.name, remoteBranch: c.branch, lease: c.tip });
+      this.graph.confirmPush = null;
+      this.pushing = false;
+      if (pushed) this.graph.load(task);
+      task.notify();
+    });
   }
 
   // ---- send the picked lines of the open file to firstmate

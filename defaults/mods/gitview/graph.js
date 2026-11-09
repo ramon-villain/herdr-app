@@ -50,7 +50,7 @@ export class Graph {
   /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
   constructor(git, locate, scroll, projects = null, leftScroll = null, filesScroll = null) {
     this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll; this.filesScroll = filesScroll;
-    this.ask = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
+    this.ask = null; this.pushes = new Map(); this.confirmPush = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
     this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
     this.worktree = null; this.ab = new Map(); this.wt = new Map(); this.wipSnap = null;
@@ -107,6 +107,7 @@ export class Graph {
       this.reset();
       cx.notify();
       this.git.aheadBehind(info.root, info.base, this.on).then((ab) => { if (run === this.run) { this.ab = ab; this.leftCache = null; cx.notify(); } }).catch(() => null);
+      this.loadPushes(run, cx);
       this.loadWorktrees(run, cx);
       this.loadWeb(info.root, run);
       this.refreshPrs(cx);
@@ -149,8 +150,15 @@ export class Graph {
     if (!root || prs.loading || (prs.root === root && Date.now() - prs.tried < 120000)) return;
     prs.loading = true; prs.tried = Date.now();
     this.git.pullRequests(root, this.on)
-      .then((byBranch) => { if (root === this.info?.root) { this.prs = { root, byBranch, tried: Date.now(), loading: false }; cx.notify(); } else prs.loading = false; })
+      .then((byBranch) => { if (root === this.info?.root) { this.prs = { root, byBranch, tried: Date.now(), loading: false }; this.loadPushes(this.run, cx); cx.notify(); } else prs.loading = false; })
       .catch(() => { prs.root = root; prs.tried = Date.now() + 180000; prs.loading = false; });
+  }
+
+  /** What each local branch has that its remote branch lacks, for the marker and the Push action. A branch with an open pull request and no upstream is paired with origin/<name>. */
+  loadPushes(run, cx) {
+    const info = this.info;
+    const unpaired = this.prs.root === info.root ? [...this.prs.byBranch].filter(([, pr]) => pr.state === "OPEN").map(([name]) => name) : [];
+    this.git.pushStates(info.root, this.on, info.remotes, unpaired).then((pushes) => { if (run === this.run) { this.pushes = pushes; this.leftCache = null; cx.notify(); } }).catch(() => null);
   }
 
   async page(run, cx) {
@@ -275,6 +283,7 @@ export class Graph {
       this.worktree = null; this.info = null; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
       this.selected = null; this.detail = null; this.file = null; this.view = null; this.details.clear(); this.views.clear();
       this.hidden.clear(); this.soloed.clear(); this.web = null; this.pick = null; this.ab = new Map(); this.wt = new Map(); this.signature = null;
+      this.pushes = new Map(); this.confirmPush = null;
       this.reset();
       this.later(cx, (cx) => this.load(cx)).catch(() => null);
     }
@@ -721,7 +730,7 @@ export class Graph {
     const locals = info.heads.map((h) => h.name), tree = branchTree(locals, this.filter, this.collapsed);
     const shas = new Map(info.heads.map((h) => [h.name, h.sha]));
     if (section("local", "LOCAL", locals.length, tree.filter((i) => i.type === "branch").length)) {
-      for (const item of tree) items.push(mark({ ...item, key: `${item.type}:${item.path ?? item.name}`, sha: shas.get(item.name), ab: this.ab.get(item.name) }));
+      for (const item of tree) items.push(mark({ ...item, key: `${item.type}:${item.path ?? item.name}`, sha: shas.get(item.name), ab: this.ab.get(item.name), push: this.pushes.get(item.name) }));
     }
     const remotes = info.remotes.filter((r) => match(r.name));
     if (section("remote", "REMOTE", info.remotes.length, remotes.length)) {
@@ -759,7 +768,7 @@ export class Graph {
     const listed = refs.filter((r) => r.type === "commit" || this.keyRef(r)).map((r) => {
       if (r.type === "commit") return { type: "commit", name: r.name, sha: r.sha, ref: null, hidden: false, solo: false, pr: null };
       const ref = this.keyRef(r), pr = r.type === "tag" || this.prs.root !== this.info?.root ? null : this.prs.byBranch.get(branchOf(r)) ?? null;
-      return { type: r.type, name: r.name, sha: r.sha ?? null, ref, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), pr };
+      return { type: r.type, name: r.name, sha: r.sha ?? null, ref, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), pr, push: r.type === "branch" ? this.pushes.get(r.name) ?? null : null };
     });
     const base = this.info?.base?.replace(/^[^/]+\//, "") ?? null;
     return listed.length ? { refs: listed, web: this.web, base, root: this.info?.root ?? null, on: this.on } : null;

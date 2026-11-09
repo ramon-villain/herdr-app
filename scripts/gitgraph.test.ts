@@ -3,9 +3,11 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-ignore: the mod is plain JS
-import { createReader, refArgs, diffRows, parseRefs, parseLog, parseWorktrees, parseStashes, parseAheadBehind } from "../defaults/mods/gitview/git.js";
+import { createReader, refArgs, diffRows, parseRefs, parseLog, parseWorktrees, parseStashes, parseAheadBehind, parsePushStates } from "../defaults/mods/gitview/git.js";
 // @ts-ignore
 import { Graph } from "../defaults/mods/gitview/graph.js";
+// @ts-ignore
+import { createActions } from "../defaults/mods/gitview/actions.js";
 // @ts-ignore
 import { layoutLanes, COLORS } from "../defaults/mods/gitview/lanes.js";
 // @ts-ignore
@@ -1104,4 +1106,83 @@ test("lighting a branch among 575 branches over 5000 commits is one cheap pass",
   const keep = g.highlight();
   expect([...keep].sort()).toEqual(Array.from({ length: 8 }, (_, i) => `s${i}`).sort());
   expect(performance.now() - start).toBeLessThan(50);
+});
+
+// ---- what a branch can push
+
+test("a branch's upstream track says how far it is ahead of and behind its remote branch", () => {
+  const tips = new Map([["origin/feat/x", "aaa"], ["origin/old", "bbb"]]);
+  const text = ["feat/x\0origin\0refs/heads/feat/x\0ahead 2, behind 1", "plain\0origin\0refs/heads/plain\0", "gone\0origin\0refs/heads/gone\0gone", "local\0.\0refs/heads/master\0ahead 3", "none\0\0\0", "renamed\0origin\0refs/heads/old\0ahead 1"].join("\n");
+  const states = parsePushStates(text, tips);
+  expect(states.get("feat/x")).toEqual({ remote: "origin", branch: "feat/x", tip: "aaa", ahead: 2, behind: 1 });
+  expect(states.get("renamed")).toEqual({ remote: "origin", branch: "old", tip: "bbb", ahead: 1, behind: 0 });
+  expect([...states.keys()].sort()).toEqual(["feat/x", "renamed"]);
+});
+
+/** A bare repository as the remote, with `feat` pushed to it and a local clone of that. */
+async function remoteFixture() {
+  const dir = await mkdtemp(join(tmpdir(), "gitpush-"));
+  roots.push(dir);
+  const bare = join(dir, "remote.git"), work = join(dir, "work");
+  await git(dir, "init", "--bare", "-b", "master", bare);
+  await git(dir, "init", "-b", "master", work);
+  await commit(work, "a.txt", "a\n", "first");
+  await git(work, "remote", "add", "origin", bare);
+  await git(work, "push", "origin", "master");
+  await git(work, "checkout", "-b", "feat");
+  await commit(work, "b.txt", "b\n", "feat work");
+  await git(work, "push", "-u", "origin", "feat");
+  return { bare, work };
+}
+const pushesOf = async (work: string, unpaired: string[] = []) => {
+  const info = await reader.repo(work, null);
+  return reader.pushStates(work, null, info.remotes, unpaired);
+};
+const pusher = (notices: any[] = []) => createActions({ exec, openLink() {}, copy() {}, notify: (n: any) => notices.push(n), inbox: "" });
+
+test("a branch that gained commits is ahead of its remote branch, and a rebased one is ahead and behind", async () => {
+  const { work } = await remoteFixture();
+  expect((await pushesOf(work)).get("feat")).toMatchObject({ remote: "origin", branch: "feat", ahead: 0, behind: 0 });
+  await commit(work, "c.txt", "c\n", "more feat");
+  expect((await pushesOf(work)).get("feat")).toMatchObject({ ahead: 1, behind: 0 });
+  await git(work, "commit", "--amend", "-m", "more feat, reworded");
+  expect((await pushesOf(work)).get("feat")).toMatchObject({ ahead: 1, behind: 0 });
+  await git(work, "reset", "--hard", "HEAD~1");
+  await git(work, "commit", "--amend", "-m", "feat work, reworded");
+  expect((await pushesOf(work)).get("feat")).toMatchObject({ ahead: 1, behind: 1 });
+});
+
+test("a branch with an open pull request and no upstream is paired with origin/<name>", async () => {
+  const { work } = await remoteFixture();
+  await git(work, "branch", "--unset-upstream", "feat");
+  await commit(work, "c.txt", "c\n", "more feat");
+  expect((await pushesOf(work)).has("feat")).toBe(false);
+  expect((await pushesOf(work, ["feat"])).get("feat")).toMatchObject({ remote: "origin", branch: "feat", ahead: 1, behind: 0 });
+});
+
+test("Push sends only the new commits, and a rebased branch needs the lease on the tip it saw", async () => {
+  const { bare, work } = await remoteFixture();
+  const notices: any[] = [];
+  const actions = pusher(notices);
+  await commit(work, "c.txt", "c\n", "more feat");
+  let state = (await pushesOf(work)).get("feat");
+  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", remoteBranch: state.branch })).toBe(true);
+  expect(await git(bare, "rev-parse", "feat")).toBe(await git(work, "rev-parse", "feat"));
+  expect(notices.at(-1)).toMatchObject({ title: "Pushed feat", level: "success" });
+
+  await git(work, "reset", "--hard", "HEAD~1");
+  await git(work, "commit", "--amend", "-m", "feat work, reworded");
+  state = (await pushesOf(work)).get("feat");
+  expect(state).toMatchObject({ ahead: 1, behind: 2 });
+  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", remoteBranch: state.branch })).toBe(false);
+  expect(notices.at(-1)).toMatchObject({ title: "Push of feat failed", level: "error" });
+  const before = await git(bare, "rev-parse", "feat");
+
+  // Someone else moved the remote branch after the tip was shown: the lease refuses the push and the remote keeps their work.
+  await git(work, "branch", "stale", state.tip);
+  expect(await actions.pushBranch({ root: work, on: null, remote: "origin", branch: "feat", remoteBranch: "feat", lease: await git(work, "rev-parse", "stale~1") })).toBe(false);
+  expect(await git(bare, "rev-parse", "feat")).toBe(before);
+
+  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", remoteBranch: state.branch, lease: state.tip })).toBe(true);
+  expect(await git(bare, "rev-parse", "feat")).toBe(await git(work, "rev-parse", "feat"));
 });
