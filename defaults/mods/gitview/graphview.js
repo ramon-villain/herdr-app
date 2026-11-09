@@ -177,6 +177,15 @@ function askBar(graph, view, t) {
     .child(pill(t, "graph-ask-close", "✕", false, (_e, cx) => { graph.ask = null; cx.notify(); }));
 }
 
+/** The box over the bottom of the tab that Force push opens: what the push replaces, and the way to go ahead or back out. */
+function confirmBar(graph, view, t) {
+  const c = graph.confirmPush;
+  return shield(h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
+    .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(`${c.remote}/${c.branch} has ${c.behind} ${c.behind === 1 ? "commit" : "commits"} that ${c.name} lacks. Force push replaces them.`))
+    .child(pill(t, "graph-force-push", view.pushing ? "Pushing…" : "Force push", false, (_e, cx) => view.forcePush(cx)))
+    .child(pill(t, "graph-force-cancel", "Cancel", false, (_e, cx) => { graph.confirmPush = null; cx.notify(); }));
+}
+
 function diffPane(graph, view, t, cx) {
   const hits = graph.findHits(), at = Math.min(graph.find.at, hits.length - 1), byRow = new Map();
   hits.forEach((h, i) => byRow.set(h.row, [...(byRow.get(h.row) ?? []), { from: h.from, to: h.to, current: i === at }]));
@@ -225,6 +234,7 @@ function leftRow(item, t, graph) {
       .child(div().flex_1().min_w(0).truncate().child(item.leaf))
       .when(item.hidden, (e) => e.child(div().text_size(10).text_color(t.dim).flex_none().child("hidden")))
       .when(item.solo, (e) => e.child(div().text_size(10).text_color(t.accent).flex_none().child("solo")))
+      .when(Boolean(item.push?.ahead), (e) => e.child(div().text_size(10).text_color(t.accent).flex_none().child(`⇡${item.push.ahead}${item.push.behind ? `⇣${item.push.behind}` : ""}`)))
       .when(Boolean(ab && (ab.ahead || ab.behind)), (e) => e.child(div().text_size(10).text_color(t.muted).flex_none().child(`${clamp99(ab.ahead)}↑ ${clamp99(ab.behind)}↓`)));
   }
   if (item.type === "worktree") {
@@ -340,5 +350,6 @@ export function renderGraphTab(graph, view, t) {
       .when(graph.panelOpen, (e) => e.child(detailPane(graph, view, t, items))))
     .when(graph.picking && Boolean(graph.info), (e) => e.child(worktreeMenu(graph, t)))
     .when(graph.pickingRepo, (e) => e.child(repoMenu(graph, t)))
-    .when(Boolean(graph.ask), (e) => e.child(askBar(graph, view, t)));
+    .when(Boolean(graph.ask), (e) => e.child(askBar(graph, view, t)))
+    .when(Boolean(graph.confirmPush), (e) => e.child(confirmBar(graph, view, t)));
 }

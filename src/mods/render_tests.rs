@@ -499,6 +499,12 @@ fn gitview_graph_tab_draws_the_commit_detail_and_the_diff_that_replaces_the_grap
     for want in ["graph-send-pick", "Send to firstmate", "2 lines", "graph-send-close"] {
         assert!(tree.contains(want), "send bar lacks {want}: {tree}");
     }
+    assert!(!tree.contains("graph-force-push"), "no force push is asked before the menu picks it: {tree}");
+    let confirm = format!("{state} g.confirmPush = {{ root: '/fixture/project', name: 'feat/x', remote: 'origin', branch: 'feat/x', tip: 'c'.repeat(40), ahead: 1, behind: 2 }};");
+    let tree = describe(cx, &staged, "mods/gitview", true, json!({"graph": true}), updates("current", "current"), Some(&confirm)).unwrap();
+    for want in ["origin/feat/x has 2 commits that feat/x lacks", "graph-force-push", "graph-force-cancel"] {
+        assert!(tree.contains(want), "force push bar lacks {want}: {tree}");
+    }
 }
 
 struct Mounted(gpui::Entity<gpui_shell::ShellRoot>);

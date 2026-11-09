@@ -366,3 +366,16 @@ test.skipIf(!existsSync(REAL_INBOX))("a picked selection lands in a scratch FM_H
   expect(note).toContain("File: src/a.ts");
   expect(note).toContain("> +new one\n> +new two");
 });
+
+test("a branch with commits its remote branch lacks offers Push, and a rebased one a Force push that needs confirming", () => {
+  const web = "https://github.com/o/r";
+  const ahead = menuEntries({ type: "branch", name: "x", sha: "s", pr: { number: 12, state: "OPEN" }, push: { remote: "origin", ahead: 2, behind: 0 } }, web);
+  expect(labels(ahead).slice(-3)).toEqual(["-", "Push 2 commits to origin", "Open PR #12"]);
+  expect(ahead.find((r: any) => r?.id === "push")).toBeTruthy();
+  const rebased = menuEntries({ type: "branch", name: "x", sha: "s", pr: null, push: { remote: "origin", ahead: 1, behind: 3 } }, null);
+  expect(labels(rebased).slice(-2)).toEqual(["-", "Force push (with lease)"]);
+  const none = (push: any, type = "branch") => labels(menuEntries({ type, name: "x", sha: "s", push }, null)).join();
+  expect(none({ remote: "origin", ahead: 0, behind: 2 })).not.toContain("push");
+  expect(none(null)).not.toContain("push");
+  expect(none({ remote: "origin", ahead: 1, behind: 0 }, "remote")).not.toContain("Push");
+});

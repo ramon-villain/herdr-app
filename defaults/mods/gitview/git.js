@@ -171,6 +171,22 @@ export function parseAheadBehind(text) {
   return out;
 }
 
+/**
+ * `for-each-ref --format=%(refname:short)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)` of refs/heads:
+ * for each branch whose upstream is a remote branch, the commits it has and that remote branch lacks (`ahead`) or the other way (`behind`).
+ * `tips` maps "<remote>/<branch>" to the sha the remote branch was last fetched at.
+ */
+export function parsePushStates(text, tips) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const [name, remote, ref, track] = line.split("\0");
+    if (!name || !remote || remote === "." || !ref?.startsWith("refs/heads/") || track === "gone") continue;
+    const branch = ref.slice(11), tip = tips.get(`${remote}/${branch}`);
+    if (tip) out.set(name, { remote, branch, tip, ahead: Number(/ahead (\d+)/.exec(track)?.[1] ?? 0), behind: Number(/behind (\d+)/.exec(track)?.[1] ?? 0) });
+  }
+  return out;
+}
+
 const escapeGlob = (name) => name.replace(/[\\*?[\]]/g, "\\$&");
 
 /**
@@ -294,6 +310,23 @@ export function createReader({ exec, readTextFile }) {
     return r.code === 0 ? parseAheadBehind(r.stdout) : new Map();
   }
 
+  /**
+   * What each local branch has that its remote branch lacks, by branch name. A branch without an upstream is paired with
+   * origin/<name> when that exists and the branch is in `unpaired` (the ones with a pull request), which costs one git call each.
+   */
+  async function pushStates(root, on, remotes, unpaired = []) {
+    const tips = new Map(remotes.map((r) => [r.name, r.sha]));
+    const r = await git(root, on, ["for-each-ref", "--format=%(refname:short)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)", "refs/heads"], 30000);
+    const states = r.code === 0 ? parsePushStates(r.stdout, tips) : new Map();
+    await Promise.all(unpaired.filter((name) => !states.has(name) && tips.has(`origin/${name}`)).map(async (name) => {
+      const counts = await git(root, on, ["rev-list", "--left-right", "--count", `refs/heads/${name}...refs/remotes/origin/${name}`]);
+      if (counts.code !== 0) return;
+      const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
+      states.set(name, { remote: "origin", branch: name, tip: tips.get(`origin/${name}`), ahead, behind });
+    }));
+    return states;
+  }
+
   /** One page of the log over every branch, remote branch, tag and HEAD (not the stash, which is drawn in its own section), parents after children. `skip` is the commits already loaded. */
   async function logPage(root, skip, on, size, refs) {
     const r = await git(root, on, ["log", ...refArgs(refs), "--topo-order", "--format=%H%x1f%P%x1f%an%x1f%ct%x1f%s%x1f%b%x1e", `--skip=${skip}`, `-n${size}`], 60000);
@@ -414,5 +447,5 @@ export function createReader({ exec, readTextFile }) {
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
   }
 
-  return { read, diff, diffBatch, repo, probe, aheadBehind, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests };
+  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests };
 }
