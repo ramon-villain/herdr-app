@@ -3,6 +3,7 @@ import { v_flex, h_flex, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { settings } from "herdr";
 import { lineSegments, markFinds } from "./model.js";
 import { diffPalette } from "./palette.js";
+import { catalogUrl } from "./refmenu.js";
 
 const ROW = 24, LANE = 9, MID = 12, LEFT_W = 300, RIGHT_W = 390, LABEL_W = 170, GRAPH_MAX = 230;
 const LANE_COLORS = ["#4f8cff", "#b04fe0", "#ff4f7b", "#ff8a3d", "#f5c542", "#9bd34a", "#3fd08a", "#2fc7d6", "#4a6cf0", "#8a5cf0", "#e0509b", "#d6a04a"];
@@ -294,10 +295,12 @@ function detailPane(graph, view, t, items) {
   const d = graph.detail, c = graph.commits[graph.index.get(graph.selected)];
   if (!graph.selected) return v_flex().w(RIGHT_W).flex_none().border_l(1).border_color(t.border).p(14).text_color(t.dim).text_size(12).child("Select a commit");
   const [subject, ...rest] = (d?.message ?? c?.subject ?? "").split("\n");
-  const body = rest.join("\n").trim(), boxH = Math.min(190, 24 + Math.ceil(subject.length / 27) * 20 + (body ? 16 + Math.ceil(body.length / 48) * 15 : 0));
+  const card = graph.cardBranch(), body = rest.join("\n").trim(), boxH = Math.min(190, 24 + Math.ceil(subject.length / 27) * 20 + (body ? 16 + Math.ceil(body.length / 48) * 15 : 0));
   return v_flex().w(RIGHT_W).h_full().flex_none().min_h(0).border_l(1).border_color(t.border)
     .child(div().h(34).flex_none().flex().items_center().justify_center().text_size(11).text_color(t.muted).border_b(1).border_color(t.border).child(d?.wip ? "uncommitted changes" : c?.stash ? `stash: ${c.stash}` : `commit: ${graph.selected.slice(0, 7)}`))
     .child(v_flex().flex_none().h(boxH).overflow_y_scrollbar().p(12).gap(6).child(div().text_size(14).child(subject)).when(Boolean(body), (e) => e.child(div().text_size(11).text_color(t.muted).child(body))))
+    .when(Boolean(card), (e) => e.child(div().id("graph-card").flex_none().px(12).py(6).truncate().text_size(11).text_color(t.accent).cursor_pointer().border_t(1).border_color(t.border)
+      .on_click((_e, cx) => { cx.stop_propagation(); view.openLink(catalogUrl(card)); }).child(`Catalog card: ${card}`)))
     .child(h_flex().flex_none().px(12).py(8).gap(10).border_t(1).border_color(t.border).text_size(11)
       .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(12).truncate().child(d?.author ?? c?.author ?? "")).child(div().text_color(t.muted).child(dateLine(d, c))))
       .child(div().text_color(t.muted).flex_none().child(d?.parents.length ? `parent${d.parents.length > 1 ? "s" : ""}: ${d.parents.map((p) => p.slice(0, 6)).join(" ")}` : "root commit")))

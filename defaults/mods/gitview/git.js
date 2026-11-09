@@ -1,7 +1,7 @@
 // The one place this mod talks to git. Both views read a folder through createReader(), so they
 // always agree and neither runs its own git. Everything here only reads: no fetch, checkout, stash,
 // reset or write, because these folders belong to people and agents working in them.
-import { prsByBranch } from "./refmenu.js";
+import { prsByBranch, catalogUrl } from "./refmenu.js";
 
 // No optional locks, no fsmonitor cookie, no index refresh: a read must write nothing under .git,
 // or a folder watch would see it and every refresh would start the next one.
@@ -442,11 +442,17 @@ export function createReader({ exec, readTextFile }) {
     return prsByBranch(...answers.map((r) => JSON.parse(r.stdout || "[]")));
   }
 
+  /** Whether Firstmate's catalog has a card for the branch: its /branch page redirects when it does. Always asks this machine. */
+  async function hasCard(branch) {
+    const r = await exec("curl", ["-s", "-o", "/dev/null", "-m", "3", "-w", "%{http_code}", catalogUrl(branch)], { timeout: 5000 });
+    return r.code === 0 && r.stdout.trim() === "302";
+  }
+
   /** The folders directly under `dir` that hold a git checkout, by name. */
   async function clones(dir, on) {
     const r = await exec("sh", ["-c", 'for d in "$1"/*/; do [ -e "${d}.git" ] && basename "$d"; done; true', "sh", dir], { on, timeout: 5000 });
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
   }
 
-  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests };
+  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests, hasCard };
 }

@@ -7,7 +7,7 @@ import { renderPanel } from "./views.js";
 import { Graph } from "./graph.js";
 import { renderGraphTab } from "./graphview.js";
 import { createActions } from "./actions.js";
-import { compareUrl, branchOf, menuHeight, menuKey, MENU_WIDTH } from "./refmenu.js";
+import { compareUrl, catalogUrl, branchOf, menuHeight, menuKey, MENU_WIDTH } from "./refmenu.js";
 import { renderRefMenu, renderPushError } from "./popup.js";
 
 const REFRESH_MS = 10000;
@@ -153,6 +153,7 @@ export default class GitView extends View {
     else if (action === "copyName") actions.copyText(ref.name, ref.type === "tag" ? "tag name" : "branch name");
     else if (action === "copySha") actions.copyText(ref.sha, "commit sha");
     else if (action === "copyLink") actions.copyCommitLink(web, ref.sha);
+    else if (action === "openCard") this.openLink(catalogUrl(branchOf(ref)));
     else if (action === "openPr") this.openLink(ref.pr.url);
     else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
     else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base, sha: ref.sha, push: ref.push });
