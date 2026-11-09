@@ -181,7 +181,7 @@ function askBar(graph, view, t) {
 function confirmBar(graph, view, t) {
   const c = graph.confirmPush;
   return shield(h_flex().absolute().bottom(12).left(320).right(12).h(40).px(8).gap(8).items_center().rounded(6).border_1().border_color(t.border).bg(t.popover).shadow_lg().text_size(12))
-    .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(`${c.remote}/${c.branch} has ${c.behind} ${c.behind === 1 ? "commit" : "commits"} that ${c.name} lacks. Force push replaces them.`))
+    .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(`${c.remote}/${c.name} has ${c.behind} ${c.behind === 1 ? "commit" : "commits"} that ${c.name} lacks. Force push replaces them.`))
     .child(pill(t, "graph-force-push", view.pushing ? "Pushing…" : "Force push", false, (_e, cx) => view.forcePush(cx)))
     .child(pill(t, "graph-force-cancel", "Cancel", false, (_e, cx) => { graph.confirmPush = null; cx.notify(); }));
 }

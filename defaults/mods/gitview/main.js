@@ -133,7 +133,7 @@ export default class GitView extends View {
     else if (action === "openPr") this.openLink(ref.pr.url);
     else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
     else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base });
-    else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name, remoteBranch: ref.push.branch })) graph.load(cx); }
+    else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name })) graph.load(cx); }
     else if (action === "forcePush") graph.confirmPush = { root, on, name: ref.name, ...ref.push };
     cx.notify();
   }
@@ -145,7 +145,7 @@ export default class GitView extends View {
     this.pushing = true;
     cx.notify();
     cx.spawn(async (task) => {
-      const pushed = await this.actions(task).pushBranch({ root: c.root, on: c.on, remote: c.remote, branch: c.name, remoteBranch: c.branch, lease: c.tip });
+      const pushed = await this.actions(task).pushBranch({ root: c.root, on: c.on, remote: c.remote, branch: c.name, lease: c.tip });
       this.graph.confirmPush = null;
       this.pushing = false;
       if (pushed) this.graph.load(task);

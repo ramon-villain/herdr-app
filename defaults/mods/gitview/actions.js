@@ -32,12 +32,12 @@ export function createActions({ exec, openLink, copy, notify, inbox }) {
     },
 
     /**
-     * Pushes `branch` to `remoteBranch` on `remote`. With `lease`, the remote tip the caller saw, it is a force push that
+     * Pushes `branch` to the branch of that name on `remote`. With `lease`, the remote tip the caller saw, it is a force push that
      * the remote refuses when someone moved that branch since. Resolves with whether it went through.
      */
-    async pushBranch({ root, on, remote, branch, remoteBranch, lease }) {
+    async pushBranch({ root, on, remote, branch, lease }) {
       notify({ title: `Pushing ${branch}`, body: `git push ${remote}`, level: "info", timeout: 2500 });
-      const args = ["push", ...(lease ? [`--force-with-lease=${remoteBranch}:${lease}`] : []), remote, remoteBranch === branch ? branch : `${branch}:${remoteBranch}`];
+      const args = ["push", ...(lease ? [`--force-with-lease=${branch}:${lease}`] : []), remote, branch];
       let pushed;
       try { pushed = await exec("git", args, { cwd: root, on, timeout: 120000 }); }
       catch (e) { pushed = { code: -1, stderr: String(e) }; }
@@ -46,7 +46,7 @@ export function createActions({ exec, openLink, copy, notify, inbox }) {
         notify({ title: `Push of ${branch} failed`, body: firstLine(lines.find((l) => /rejected|error|fatal/i.test(l)) ?? pushed.stderr), level: "error" });
         return false;
       }
-      notify({ title: `Pushed ${branch}`, body: `${remote}/${remoteBranch}`, level: "success", timeout: 3000 });
+      notify({ title: `Pushed ${branch}`, body: `${remote}/${branch}`, level: "success", timeout: 3000 });
       return true;
     },
 

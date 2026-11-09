@@ -173,7 +173,8 @@ export function parseAheadBehind(text) {
 
 /**
  * `for-each-ref --format=%(refname:short)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)` of refs/heads:
- * for each branch whose upstream is a remote branch, the commits it has and that remote branch lacks (`ahead`) or the other way (`behind`).
+ * for each branch whose upstream is the remote branch of the same name, the commits it has and that remote branch lacks (`ahead`) or the other way (`behind`).
+ * A branch cut from origin/master has that upstream, and pushing to it would push to master, so it is left out.
  * `tips` maps "<remote>/<branch>" to the sha the remote branch was last fetched at.
  */
 export function parsePushStates(text, tips) {
@@ -181,8 +182,8 @@ export function parsePushStates(text, tips) {
   for (const line of text.split("\n")) {
     const [name, remote, ref, track] = line.split("\0");
     if (!name || !remote || remote === "." || !ref?.startsWith("refs/heads/") || track === "gone") continue;
-    const branch = ref.slice(11), tip = tips.get(`${remote}/${branch}`);
-    if (tip) out.set(name, { remote, branch, tip, ahead: Number(/ahead (\d+)/.exec(track)?.[1] ?? 0), behind: Number(/behind (\d+)/.exec(track)?.[1] ?? 0) });
+    const tip = ref.slice(11) === name ? tips.get(`${remote}/${name}`) : null;
+    if (tip) out.set(name, { remote, tip, ahead: Number(/ahead (\d+)/.exec(track)?.[1] ?? 0), behind: Number(/behind (\d+)/.exec(track)?.[1] ?? 0) });
   }
   return out;
 }
@@ -322,7 +323,7 @@ export function createReader({ exec, readTextFile }) {
       const counts = await git(root, on, ["rev-list", "--left-right", "--count", `refs/heads/${name}...refs/remotes/origin/${name}`]);
       if (counts.code !== 0) return;
       const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
-      states.set(name, { remote: "origin", branch: name, tip: tips.get(`origin/${name}`), ahead, behind });
+      states.set(name, { remote: "origin", tip: tips.get(`origin/${name}`), ahead, behind });
     }));
     return states;
   }

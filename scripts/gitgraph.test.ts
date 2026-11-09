@@ -1111,12 +1111,11 @@ test("lighting a branch among 575 branches over 5000 commits is one cheap pass",
 // ---- what a branch can push
 
 test("a branch's upstream track says how far it is ahead of and behind its remote branch", () => {
-  const tips = new Map([["origin/feat/x", "aaa"], ["origin/old", "bbb"]]);
-  const text = ["feat/x\0origin\0refs/heads/feat/x\0ahead 2, behind 1", "plain\0origin\0refs/heads/plain\0", "gone\0origin\0refs/heads/gone\0gone", "local\0.\0refs/heads/master\0ahead 3", "none\0\0\0", "renamed\0origin\0refs/heads/old\0ahead 1"].join("\n");
+  const tips = new Map([["origin/feat/x", "aaa"], ["origin/master", "bbb"]]);
+  const text = ["feat/x\0origin\0refs/heads/feat/x\0ahead 2, behind 1", "plain\0origin\0refs/heads/plain\0", "gone\0origin\0refs/heads/gone\0gone", "local\0.\0refs/heads/master\0ahead 3", "none\0\0\0", "cut\0origin\0refs/heads/master\0ahead 4, behind 20"].join("\n");
   const states = parsePushStates(text, tips);
-  expect(states.get("feat/x")).toEqual({ remote: "origin", branch: "feat/x", tip: "aaa", ahead: 2, behind: 1 });
-  expect(states.get("renamed")).toEqual({ remote: "origin", branch: "old", tip: "bbb", ahead: 1, behind: 0 });
-  expect([...states.keys()].sort()).toEqual(["feat/x", "renamed"]);
+  expect(states.get("feat/x")).toEqual({ remote: "origin", tip: "aaa", ahead: 2, behind: 1 });
+  expect([...states.keys()].sort()).toEqual(["feat/x"]);
 });
 
 /** A bare repository as the remote, with `feat` pushed to it and a local clone of that. */
@@ -1142,7 +1141,7 @@ const pusher = (notices: any[] = []) => createActions({ exec, openLink() {}, cop
 
 test("a branch that gained commits is ahead of its remote branch, and a rebased one is ahead and behind", async () => {
   const { work } = await remoteFixture();
-  expect((await pushesOf(work)).get("feat")).toMatchObject({ remote: "origin", branch: "feat", ahead: 0, behind: 0 });
+  expect((await pushesOf(work)).get("feat")).toMatchObject({ remote: "origin", ahead: 0, behind: 0 });
   await commit(work, "c.txt", "c\n", "more feat");
   expect((await pushesOf(work)).get("feat")).toMatchObject({ ahead: 1, behind: 0 });
   await git(work, "commit", "--amend", "-m", "more feat, reworded");
@@ -1157,7 +1156,7 @@ test("a branch with an open pull request and no upstream is paired with origin/<
   await git(work, "branch", "--unset-upstream", "feat");
   await commit(work, "c.txt", "c\n", "more feat");
   expect((await pushesOf(work)).has("feat")).toBe(false);
-  expect((await pushesOf(work, ["feat"])).get("feat")).toMatchObject({ remote: "origin", branch: "feat", ahead: 1, behind: 0 });
+  expect((await pushesOf(work, ["feat"])).get("feat")).toMatchObject({ remote: "origin", ahead: 1, behind: 0 });
 });
 
 test("Push sends only the new commits, and a rebased branch needs the lease on the tip it saw", async () => {
@@ -1166,7 +1165,7 @@ test("Push sends only the new commits, and a rebased branch needs the lease on t
   const actions = pusher(notices);
   await commit(work, "c.txt", "c\n", "more feat");
   let state = (await pushesOf(work)).get("feat");
-  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", remoteBranch: state.branch })).toBe(true);
+  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat" })).toBe(true);
   expect(await git(bare, "rev-parse", "feat")).toBe(await git(work, "rev-parse", "feat"));
   expect(notices.at(-1)).toMatchObject({ title: "Pushed feat", level: "success" });
 
@@ -1174,15 +1173,15 @@ test("Push sends only the new commits, and a rebased branch needs the lease on t
   await git(work, "commit", "--amend", "-m", "feat work, reworded");
   state = (await pushesOf(work)).get("feat");
   expect(state).toMatchObject({ ahead: 1, behind: 2 });
-  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", remoteBranch: state.branch })).toBe(false);
+  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat" })).toBe(false);
   expect(notices.at(-1)).toMatchObject({ title: "Push of feat failed", level: "error" });
   const before = await git(bare, "rev-parse", "feat");
 
   // Someone else moved the remote branch after the tip was shown: the lease refuses the push and the remote keeps their work.
   await git(work, "branch", "stale", state.tip);
-  expect(await actions.pushBranch({ root: work, on: null, remote: "origin", branch: "feat", remoteBranch: "feat", lease: await git(work, "rev-parse", "stale~1") })).toBe(false);
+  expect(await actions.pushBranch({ root: work, on: null, remote: "origin", branch: "feat", lease: await git(work, "rev-parse", "stale~1") })).toBe(false);
   expect(await git(bare, "rev-parse", "feat")).toBe(before);
 
-  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", remoteBranch: state.branch, lease: state.tip })).toBe(true);
+  expect(await actions.pushBranch({ root: work, on: null, remote: state.remote, branch: "feat", lease: state.tip })).toBe(true);
   expect(await git(bare, "rev-parse", "feat")).toBe(await git(work, "rev-parse", "feat"));
 });
