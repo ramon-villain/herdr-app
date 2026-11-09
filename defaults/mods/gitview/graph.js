@@ -60,7 +60,7 @@ export class Graph {
     this.find = { open: false, query: "", at: -1 }; this.findCache = null;
     this.filter = ""; this.collapsed = new Set(); this.open = { ...OPEN };
     this.hidden = new Set(); this.soloed = new Set(); this.web = null;
-    this.prs = { root: null, byBranch: new Map(), tried: 0, loading: false }; this.pick = null;
+    this.prs = { root: null, byBranch: new Map(), tried: 0, loading: false }; this.cards = new Map(); this.pick = null;
     this.query = ""; this.matches = null; this.onlyMatches = false; this.searching = false; this.hitAt = -1; this.hitCache = null; this.searchRun = 0;
     this.fileMode = "path"; this.wantMore = false; this.signature = null; this.leftCache = null;
     this.run = 0; this.picking = false;
@@ -336,6 +336,7 @@ export class Graph {
   async selectWip(cx) {
     this.selected = "wip"; this.detail = this.wipDetail(); this.detailError = null; this.file = null; this.view = null;
     this.revealMarked();
+    this.probeCards(cx);
     cx.notify();
   }
 
@@ -349,6 +350,7 @@ export class Graph {
   async selectCommit(sha, cx) {
     this.selected = sha; this.detail = this.details.get(sha) ?? null; this.detailError = null; this.file = null; this.view = null;
     this.revealMarked();
+    this.probeCards(cx);
     cx.notify();
     if (this.detail) { this.prefetch(this.detail, cx); return; }
     return this.later(cx, (cx) => this.readCommit(sha, cx));
@@ -690,6 +692,21 @@ export class Graph {
     while (todo.length) for (const kid of this.kids.children.get(todo.pop()) ?? []) if (!reach.has(kid)) { reach.add(kid); todo.push(kid); }
     for (const h of info.heads) if (reach.has(h.sha)) names.add(h.name);
     return found;
+  }
+
+  /** Asks the catalog in the background which marked branches have a card, at most every two minutes per branch. */
+  probeCards(cx) {
+    for (const name of this.markedBranches().names) {
+      const seen = this.cards.get(name);
+      if (seen && Date.now() - seen.at < 120000) continue;
+      this.cards.set(name, { has: seen?.has ?? false, at: Date.now() });
+      this.later(cx, async (task) => { this.cards.set(name, { has: await this.git.hasCard(name), at: Date.now() }); task.notify(); }).catch(() => null);
+    }
+  }
+
+  /** The first marked branch the catalog has a card for, as far as the probe has answered. */
+  cardBranch() {
+    return [...this.markedBranches().names].find((name) => this.cards.get(name)?.has) ?? null;
   }
 
   /** Opens the LOCAL section and the folders holding the marked branches, then scrolls the first one into view. */

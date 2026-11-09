@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-ignore: the mod is plain JS
-import { webUrl, commitUrl, compareUrl, branchOf, prsByBranch, menuEntries } from "../defaults/mods/gitview/refmenu.js";
+import { webUrl, catalogUrl, commitUrl, compareUrl, branchOf, prsByBranch, menuEntries } from "../defaults/mods/gitview/refmenu.js";
 // @ts-ignore
 import { noteBody, lineRanges, selectedText, NOTE_TAG } from "../defaults/mods/gitview/note.js";
 // @ts-ignore
@@ -73,31 +73,31 @@ const labels = (rows: any[]) => rows.map((r) => (r ? r.label : "-"));
 
 test("a branch without a pull request offers Push and create PR beside the copies, solo and hide", () => {
   const rows = menuEntries({ type: "branch", name: "feat/x", sha: "a".repeat(40), pr: null }, "https://github.com/o/r");
-  expect(labels(rows)).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Push and create PR"]);
+  expect(labels(rows)).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Push and create PR", "Open catalog card"]);
   expect(rows.map((r) => r?.id)).toContain("pushPr");
 });
 
 test("a branch with an open pull request offers to open it and nothing to create", () => {
   const rows = menuEntries({ type: "branch", name: "x", sha: "s", pr: { number: 12, state: "OPEN" }, solo: true, hidden: true }, "https://github.com/o/r");
-  expect(labels(rows)).toEqual(["Unsolo", "Show", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Open PR #12"]);
+  expect(labels(rows)).toEqual(["Unsolo", "Show", "-", "Copy branch name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate...", "-", "Open PR #12", "Open catalog card"]);
 });
 
 test("a closed pull request can be opened or replaced, a merged one only opened", () => {
   const web = "https://github.com/o/r";
-  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "CLOSED" } }, web)).slice(-2)).toEqual(["Open PR #4 (closed)", "Push and create PR"]);
-  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "MERGED" } }, web)).slice(-1)).toEqual(["Open PR #4 (merged)"]);
+  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "CLOSED" } }, web)).slice(-3)).toEqual(["Open PR #4 (closed)", "Push and create PR", "Open catalog card"]);
+  expect(labels(menuEntries({ type: "branch", name: "x", pr: { number: 4, state: "MERGED" } }, web)).slice(-2)).toEqual(["Open PR #4 (merged)", "Open catalog card"]);
 });
 
 test("a remote branch is already pushed, so it only creates the PR; a tag has no PR rows", () => {
   const web = "https://github.com/o/r";
-  expect(labels(menuEntries({ type: "remote", name: "origin/x", sha: "s", pr: null }, web)).slice(-1)).toEqual(["Create PR"]);
+  expect(labels(menuEntries({ type: "remote", name: "origin/x", sha: "s", pr: null }, web)).slice(-2)).toEqual(["Create PR", "Open catalog card"]);
   const tag = menuEntries({ type: "tag", name: "v1", sha: "s" }, web);
   expect(labels(tag)).toEqual(["Solo", "Hide", "-", "Copy tag name", "Copy commit sha", "Copy link to commit on origin", "Ask firstmate..."]);
 });
 
 test("without a GitHub origin the menu has no link or PR rows, and without a sha no sha rows", () => {
-  expect(labels(menuEntries({ type: "branch", name: "x", sha: "s", pr: null }, null))).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Ask firstmate..."]);
-  expect(labels(menuEntries({ type: "branch", name: "x" }, "https://github.com/o/r")).slice(3)).toEqual(["Copy branch name", "Ask firstmate...", "-", "Push and create PR"]);
+  expect(labels(menuEntries({ type: "branch", name: "x", sha: "s", pr: null }, null))).toEqual(["Solo", "Hide", "-", "Copy branch name", "Copy commit sha", "Ask firstmate...", "-", "Open catalog card"]);
+  expect(labels(menuEntries({ type: "branch", name: "x" }, "https://github.com/o/r")).slice(3)).toEqual(["Copy branch name", "Ask firstmate...", "-", "Push and create PR", "Open catalog card"]);
 });
 
 test("the popup keys move over the actions and wrap, Enter returns the action, Esc closes", () => {
@@ -107,7 +107,7 @@ test("the popup keys move over the actions and wrap, Enter returns the action, E
   expect(state.at).toBe(1);
   expect(menuKey(state, "enter", menu)).toMatchObject({ id: "hide" });
   menuKey(state, "up", menu); menuKey(state, "up", menu);
-  expect(state.at).toBe(4);
+  expect(state.at).toBe(5);
   expect(menuKey(state, "escape", menu)).toBe("close");
   expect(menuKey(state, "x", menu)).toBe(false);
   expect(menuHeight(menu)).toBeGreaterThan(menuHeight({ web: null, refs: [{ type: "tag", name: "t" }] }) - 1);
@@ -440,12 +440,52 @@ test.skipIf(!existsSync(REAL_INBOX))("a picked selection lands in a scratch FM_H
 test("a branch with commits its remote branch lacks offers Push, and a rebased one a Force push that needs confirming", () => {
   const web = "https://github.com/o/r";
   const ahead = menuEntries({ type: "branch", name: "x", sha: "s", pr: { number: 12, state: "OPEN" }, push: { remote: "origin", ahead: 2, behind: 0 } }, web);
-  expect(labels(ahead).slice(-3)).toEqual(["-", "Push 2 commits to origin", "Open PR #12"]);
+  expect(labels(ahead).slice(-3)).toEqual(["Push 2 commits to origin", "Open PR #12", "Open catalog card"]);
   expect(ahead.find((r: any) => r?.id === "push")).toBeTruthy();
   const rebased = menuEntries({ type: "branch", name: "x", sha: "s", pr: null, push: { remote: "origin", ahead: 1, behind: 3 } }, null);
-  expect(labels(rebased).slice(-2)).toEqual(["-", "Force push (with lease)"]);
+  expect(labels(rebased).slice(-2)).toEqual(["Force push (with lease)", "Open catalog card"]);
   const none = (push: any, type = "branch") => labels(menuEntries({ type, name: "x", sha: "s", push }, null)).join();
   expect(none({ remote: "origin", ahead: 0, behind: 2 })).not.toContain("push");
   expect(none(null)).not.toContain("push");
   expect(none({ remote: "origin", ahead: 1, behind: 0 }, "remote")).not.toContain("Push");
+});
+
+// ---- the catalog card of a branch
+
+test("a branch or remote branch offers its catalog card, a tag and a commit do not", () => {
+  const ids = (ref: any) => menuEntries(ref, null).map((r: any) => r?.id);
+  expect(ids({ type: "branch", name: "x" })).toContain("openCard");
+  expect(ids({ type: "remote", name: "origin/x" })).toContain("openCard");
+  expect(ids({ type: "tag", name: "v1" })).not.toContain("openCard");
+  expect(ids({ type: "commit", name: "abc", sha: "abc" })).not.toContain("openCard");
+});
+
+test("the catalog link keeps the slashes of the branch and escapes the rest", () => {
+  expect(catalogUrl("feat/a b#1")).toBe("http://catalog.localhost:8888/branch/feat/a%20b%231");
+});
+
+test("a branch has a card only when the catalog redirects, asked through curl", async () => {
+  const hit = await fakes({ curl: { out: "302" } });
+  expect(await createReader({ exec: hit.exec }).hasCard("feat/x")).toBe(true);
+  expect((await hit.calls())[0]).toContain("http://catalog.localhost:8888/branch/feat/x");
+  const miss = await fakes({ curl: { out: "404" } });
+  expect(await createReader({ exec: miss.exec }).hasCard("feat/x")).toBe(false);
+  const down = await fakes({ curl: { out: "000", code: 7 } });
+  expect(await createReader({ exec: down.exec }).hasCard("feat/x")).toBe(false);
+});
+
+test("the detail panel names a marked branch once the catalog has answered, and asks again after two minutes", async () => {
+  let asked = 0;
+  const g = graphWith({ hasCard: async (name: string) => { asked++; return name === "feat"; } });
+  g.info.heads = [{ name: "feat", sha: "s" }, { name: "other", sha: "s" }];
+  g.selected = "s";
+  expect(g.cardBranch()).toBeNull();
+  g.probeCards(cx);
+  g.probeCards(cx);
+  await settle();
+  expect(asked).toBe(2);
+  expect(g.cardBranch()).toBe("feat");
+  g.cards.get("feat").at -= 121000;
+  g.probeCards(cx);
+  expect(asked).toBe(3);
 });
