@@ -50,7 +50,7 @@ function labelsOf(graph, c, color, t) {
   const first = all[0], extra = all.length - 1;
   const fill = first.k === "head" ? LANE_COLORS[color] : first.k === "tag" ? t.ansi3 : first.k === "stash" ? t.ansi5 : t.muted;
   return h_flex().w(LABEL_W).flex_none().pr(6).gap(4).items_center()
-    .child(div().min_w(0).flex_shrink_0().max_w(extra ? LABEL_W - 40 : LABEL_W - 8).px(6).h(18).rounded(4).bg(`${fill}55`).text_size(11).truncate().child(first.k === "tag" ? `◆ ${first.n}` : first.n))
+    .child(div().min_w(0).flex_shrink_0().max_w(extra ? LABEL_W - 40 : LABEL_W - 8).px(6).h(18).rounded(4).cursor_pointer().bg(`${fill}55`).text_size(11).truncate().child(first.k === "tag" ? `◆ ${first.n}` : first.n))
     .when(extra > 0, (e) => e.child(div().text_size(10).text_color(t.dim).flex_none().child(`+${extra}`)));
 }
 
@@ -64,9 +64,10 @@ function wipRow(graph, t, gw) {
       .child(div().child(`Uncommitted changes · ${graph.wipSnap.uncommittedTotal} ${graph.wipSnap.uncommittedTotal === 1 ? "file" : "files"}`)));
 }
 
-function commitRow(graph, i, t, gw, headSha) {
+function commitRow(graph, i, t, gw, headSha, keep) {
   const c = graph.commits[i], row = graph.rows[i], on = graph.selected === c.sha, hit = graph.isHit(i);
   return h_flex().w_full().h(ROW).flex_none().items_center().relative()
+    .when(keep && !keep.has(c.sha), (e) => e.opacity(0.3))
     .when(hit, (e) => e.bg(`${t.accent}2a`))
     .when(on, (e) => e.bg(t.selected))
     .child(labelsOf(graph, c, row.color, t))
@@ -99,13 +100,13 @@ function graphList(graph, view, t) {
       .child(div().w(LABEL_W).flex_none().pl(10).child("BRANCH / TAG"))
       .child(div().w(gw).flex_none().child("GRAPH"))
       .child(div().pl(8).child("COMMIT MESSAGE")))
-    .child(div().flex_1().min_h(0).relative()
+    .child(div().flex_1().min_h(0).relative().on_mouse_move((e, cx) => graph.overLabels(e.local_position.x < LABEL_W, cx))
       .child(v_virtual_list("graph-rows", graph.count(), ROW, (k) => (graph.at(k) < 0 ? "wip" : graph.commits[graph.at(k)].sha), (range) => {
         if (range.end >= graph.count() - 80) graph.wantMore = true;
-        const rows = [];
-        for (let k = range.start; k < range.end; k++) rows.push(graph.at(k) < 0 ? wipRow(graph, t, gw) : commitRow(graph, graph.at(k), t, gw, headSha));
+        const rows = [], keep = graph.highlight();
+        for (let k = range.start; k < range.end; k++) rows.push(graph.at(k) < 0 ? wipRow(graph, t, gw) : commitRow(graph, graph.at(k), t, gw, headSha, keep));
         return rows;
-      }).track_scroll(view.graphScroll).on_item_click((sha, cx) => graph.select(sha, cx)).on_item_secondary_click((sha) => view.openMenu(graph.menuRow(sha))).size_full())
+      }).track_scroll(view.graphScroll).on_item_click((sha, cx) => graph.select(sha, cx)).on_item_hover((sha, hovered, cx) => graph.hoverRow(sha, hovered, cx)).on_item_secondary_click((sha) => view.openMenu(graph.menuRow(sha))).size_full())
       .child(Scrollbar.vertical("graph-rows").absolute().inset_0())
       .when(!graph.commits.length, (e) => e.child(div().absolute().p(14).text_color(t.dim).child(graph.error ?? (graph.loading ? "Loading…" : "No commits"))))
       .when(Boolean(graph.status), (e) => e.child(div().absolute().bottom(8).right(14).px(8).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child(graph.status))));
@@ -200,7 +201,7 @@ function diffPane(graph, view, t, cx) {
 // ---- the branch tree
 
 function leftRow(item, t, graph) {
-  const row = h_flex().w_full().h(ROW).flex_none().items_center().gap(6).text_size(12).pr(10);
+  const row = h_flex().w_full().h(ROW).flex_none().items_center().gap(6).text_size(12).pr(10).cursor_pointer();
   const indent = (depth) => div().w(8 + (depth ?? 0) * 14).flex_none();
   if (item.type === "section") {
     return row.pl(8).bg(t.surface).text_size(11).font_semibold().text_color(t.muted)
@@ -246,7 +247,7 @@ function leftPane(graph, view, t) {
       .child(Input.new(view.input).h(28).px(8).rounded(6).border_1().border_color(t.border).bg(t.background).text_size(12).text_color(t.foreground)))
     .child(div().flex_1().min_h(0).relative()
       .child(v_virtual_list("graph-left", items.length, ROW, (i) => items[i].key, (range) => items.slice(range.start, range.end).map((item) => leftRow(item, t, graph)))
-        .track_scroll(view.leftScroll).on_item_click((key, cx) => graph.clickLeft(key, cx)).on_item_secondary_click((key) => view.openMenu(graph.menuLeft(key))).size_full())
+        .track_scroll(view.leftScroll).on_item_click((key, cx) => graph.clickLeft(key, cx)).on_item_hover((key, hovered, cx) => graph.hoverLeft(key, hovered, cx)).on_item_secondary_click((key) => view.openMenu(graph.menuLeft(key))).size_full())
       .child(Scrollbar.vertical("graph-left").absolute().inset_0())
       .when(!info, (e) => e.child(div().absolute().p(12).text_color(t.dim).child(graph.error ?? "Loading…"))));
 }
@@ -261,7 +262,7 @@ function fileRow(item, t, graph) {
   const label = graph.fileMode === "tree"
     ? h_flex().flex_1().min_w(0).child(div().w(8 + item.depth * 12).flex_none()).child(div().truncate().child(item.name))
     : h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? `${parts.join("/")}/` : "")).child(div().flex_none().child(name));
-  return row.pl(8).when(on, (e) => e.bg(t.selected)).child(div().w(12).flex_none().text_color(color).child(STATUS[file.status] ?? "M")).child(label)
+  return row.cursor_pointer().pl(8).when(on, (e) => e.bg(t.selected)).child(div().w(12).flex_none().text_color(color).child(STATUS[file.status] ?? "M")).child(label)
     .when(file.add > 0, (e) => e.child(div().text_size(10).text_color(t.ansi2).child(`+${file.add}`)))
     .when(file.del > 0, (e) => e.child(div().text_size(10).text_color(t.ansi1).child(`−${file.del}`)));
 }

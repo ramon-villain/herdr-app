@@ -569,7 +569,7 @@ fn graph_repo() -> PathBuf {
 /// Runs the Git graph tab in the real engine against real git and picks Hide and Solo the way the branch menu popup does:
 /// the popup writes a request to shared state and the tab runs it.
 #[gpui::test]
-fn gitview_graph_lists_commits_after_hide_and_solo_from_the_menu(cx: &mut TestAppContext) {
+fn gitview_graph_hide_solo_and_hover_through_the_real_engine(cx: &mut TestAppContext) {
     use gpui::{px, size};
     use std::ops::Deref;
     cx.update(gpui_shell::init);
@@ -589,7 +589,7 @@ export default class Scenario extends Real {
   }
   render(cx) {
     const g = this.graph, out = super.render(cx);
-    notify(JSON.stringify({ commits: g.commits.map((c) => c.subject), loading: g.loading, error: g.error, hidden: [...g.hidden], solo: [...g.soloed] }));
+    notify(JSON.stringify({ commits: g.commits.map((c) => c.subject), loading: g.loading, error: g.error, hidden: [...g.hidden], solo: [...g.soloed], lit: g.highlight() && [...g.highlight()].map((sha) => g.commits[g.index.get(sha)].subject).sort() }));
     return out;
   }
 }"#).unwrap();
@@ -633,6 +633,18 @@ export default class Scenario extends Real {
     pick(3, "solo", "feat/b");
     let (subjects, state) = listed(&mut context);
     assert_eq!(subjects, ["base", "only a", "only b"], "after Solo of two: {state}");
+    // Moving the pointer down the branch list lights each branch's own commits.
+    let mut lit = std::collections::BTreeSet::new();
+    for y in (120..360).step_by(6) {
+        context.simulate_mouse_move(gpui::point(px(120.), px(y as f32)), None, gpui::Modifiers::none());
+        listed(&mut context);
+        let last = calls.borrow().effects.iter().rev().find(|(name, _)| name == "notify").map(|(_, args)| args[0].clone()).unwrap();
+        let state: Value = serde_json::from_str(last.as_str().unwrap()).unwrap();
+        if !state["lit"].is_null() {
+            lit.insert(state["lit"].to_string());
+        }
+    }
+    assert!(lit.contains(r#"["only a"]"#) && lit.contains(r#"["only b"]"#), "hovering feat/a and feat/b should each light only their own commit: {lit:?}");
     std::fs::remove_dir_all(repo).unwrap();
 }
 

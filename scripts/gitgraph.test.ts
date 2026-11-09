@@ -1058,3 +1058,50 @@ test("arrow down and up open the next and previous file in Path and Tree view an
   expect(g.file.path).toBe("a.ts");
   expect(g.stepFile(-1, cx)).toBe(false);
 });
+
+// ---- hover highlight
+
+const lit = (g: any) => { const keep = g.highlight(); return keep && [...keep].sort(); };
+
+test("hovering a branch in the list keeps its own commits and drops those other branches reach", () => {
+  const { g } = branchGraph([{ name: "master", sha: "d" }, { name: "side", sha: "x" }, { name: "old", sha: "a" }]);
+  g.left();
+  expect(lit(g)).toBeNull();
+  g.hoverLeft("branch:side", true, cx);
+  expect(lit(g)).toEqual(["x"]);
+  g.hoverLeft("branch:master", true, cx);
+  expect(lit(g)).toEqual(["c", "d"]);
+  g.hoverLeft("branch:old", true, cx);
+  expect(lit(g)).toEqual(["a"]);
+  g.hoverLeft("branch:master", false, cx);
+  expect(lit(g)).toEqual(["a"]);
+  g.hoverLeft("branch:old", false, cx);
+  expect(lit(g)).toBeNull();
+});
+
+test("hovering the label column of a graph row lights that row's first branch, and only over the labels", () => {
+  const { g } = branchGraph([{ name: "master", sha: "d" }, { name: "side", sha: "x" }]);
+  g.info.bySha = new Map([["x", { heads: ["side"], remotes: [], tags: [] }], ["c", { heads: [], remotes: [], tags: [] }]]);
+  g.hoverRow("x", true, cx);
+  expect(lit(g)).toBeNull();
+  g.overLabels(true, cx);
+  expect(lit(g)).toEqual(["x"]);
+  g.overLabels(false, cx);
+  expect(lit(g)).toBeNull();
+  g.overLabels(true, cx);
+  g.hoverRow("x", false, cx);
+  g.hoverRow("c", true, cx);
+  expect(lit(g)).toBeNull();
+});
+
+test("lighting a branch among 575 branches over 5000 commits is one cheap pass", () => {
+  const { g } = branchGraph(Array.from({ length: 575 }, (_, i) => ({ name: `b/${i}`, sha: `s${i * 8}` })));
+  g.commits = Array.from({ length: 5000 }, (_, i) => c(`s${i}`, `s${i + 1}`));
+  g.commits.forEach((commit: any, i: number) => g.index.set(commit.sha, i));
+  g.left();
+  const start = performance.now();
+  g.hoverLeft("branch:b/0", true, cx);
+  const keep = g.highlight();
+  expect([...keep].sort()).toEqual(Array.from({ length: 8 }, (_, i) => `s${i}`).sort());
+  expect(performance.now() - start).toBeLessThan(50);
+});

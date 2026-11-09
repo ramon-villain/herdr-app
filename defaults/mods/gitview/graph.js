@@ -66,6 +66,7 @@ export class Graph {
     this.run = 0; this.picking = false;
     this.details = new Map(); this.views = new Map(); this.itemsCache = null; this.wipKey = null; this.wipGen = 0;
     this.show = savedShow(); this.loaded = 0; this.placed = new Set();
+    this.leftHover = null; this.rowHover = null; this.inLabels = false; this.lit = null;
   }
 
   get on() { return this.where?.on ?? null; }
@@ -578,6 +579,69 @@ export class Graph {
     const all = (this.info?.heads.length ?? 0) + (this.show.remotes ? this.info?.remotes.length ?? 0 : 0);
     if (this.soloed.size) return { shown: this.soloed.size, all };
     return { shown: all - [...this.hidden].filter((r) => !r.startsWith("refs/tags/")).length, all };
+  }
+
+  // ---- hover highlight: the commits of the branch under the pointer stay at full strength, the rest dim
+
+  /** The pointer entered (`hovered`) or left a row of the branch list. */
+  hoverLeft(key, hovered, cx) {
+    const item = this.leftMap?.get(key), ref = item && refOf[item.type] && item.sha ? { type: item.type, name: item.name, sha: item.sha } : null;
+    if (hovered) this.leftHover = ref;
+    else if (this.leftHover && ref && this.leftHover.type === ref.type && this.leftHover.name === ref.name) this.leftHover = null;
+    cx.notify();
+  }
+
+  /** The pointer entered or left a commit row of the graph. */
+  hoverRow(sha, hovered, cx) {
+    if (hovered) this.rowHover = sha;
+    else if (this.rowHover === sha) this.rowHover = null;
+    cx.notify();
+  }
+
+  /** Whether the pointer is over the column of branch labels of the graph. Moves are many, so only a change redraws. */
+  overLabels(inside, cx) {
+    if (inside === this.inLabels) return;
+    this.inLabels = inside;
+    cx.notify();
+  }
+
+  /** The branch, remote branch or tag the pointer is on: in the branch list, or the first label of the hovered graph row. */
+  hoveredRef() {
+    if (this.leftHover) return this.leftHover;
+    if (!this.inLabels || !this.rowHover) return null;
+    const at = this.info?.bySha.get(this.rowHover), { remotes, tags } = this.show;
+    if (!at) return null;
+    if (at.heads.length) return { type: "branch", name: at.heads[0], sha: this.rowHover };
+    if (remotes && at.remotes.length) return { type: "remote", name: at.remotes[0], sha: this.rowHover };
+    if (tags && at.tags.length) return { type: "tag", name: at.tags[0], sha: this.rowHover };
+    return null;
+  }
+
+  /**
+   * The shas of the commits to keep at full strength while a ref is hovered, or null when nothing is hovered.
+   * They are the loaded commits the ref reaches that no other branch reaches, and the ref's own commit.
+   * One pass over the loaded commits, kept until the ref or the loaded history changes.
+   */
+  highlight() {
+    const ref = this.hoveredRef();
+    if (!ref || !this.index.has(ref.sha)) return null;
+    const key = `${ref.type}:${ref.name}|${this.commits.length}`;
+    if (this.lit?.key === key) return this.lit.keep;
+    const reach = (from, seen) => {
+      const todo = [...from];
+      while (todo.length) {
+        const sha = todo.pop(), at = this.index.get(sha);
+        if (at === undefined || seen.has(sha)) continue;
+        seen.add(sha);
+        for (const p of this.commits[at].parents ?? []) todo.push(p);
+      }
+      return seen;
+    };
+    const others = reach([...this.info.heads, ...(this.show.remotes ? this.info.remotes : [])].filter((h) => h.sha !== ref.sha).map((h) => h.sha), new Set());
+    const keep = new Set([ref.sha]);
+    for (const sha of reach([ref.sha], new Set())) if (!others.has(sha)) keep.add(sha);
+    this.lit = { key, keep };
+    return keep;
   }
 
   // ---- the left column

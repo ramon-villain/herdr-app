@@ -3681,6 +3681,20 @@ impl ShellRuntime {
         });
     }
 
+    /// Delivers the pointer entering (`hovered`) or leaving a virtual list row: the row's key, then whether it is over.
+    pub(crate) fn dispatch_item_hover(
+        self: &Rc<Self>,
+        id: CallbackId,
+        key: &str,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.dispatch_item(id, "item hover", window, cx, |_, handler, context| {
+            handler.call::<_, ()>((key, hovered, context))
+        });
+    }
+
     /// Delivers a secondary press on a virtual list row: the row's key, then
     /// the press exactly as `on_mouse_down` would report it, with
     /// `local_position` measured from the row's own box.
@@ -7253,6 +7267,7 @@ impl ShellRuntime {
                 "keep_mounted",
                 "on_item_click",
                 "on_item_secondary_click",
+                "on_item_hover",
                 "on_change",
                 "token",
                 "on_token_click",
@@ -8241,6 +8256,7 @@ impl ShellRuntime {
             | "on_step"
             | "on_item_click"
             | "on_item_secondary_click"
+            | "on_item_hover"
             | "on_mouse_move"
             | "on_hover"
             | "on_key_down"
@@ -10239,6 +10255,7 @@ fn callback_op_name(method: &str) -> Option<&'static str> {
         "on_scroll_wheel" => "on_scroll_wheel",
         "on_item_click" => "on_item_click",
         "on_item_secondary_click" => "on_item_secondary_click",
+        "on_item_hover" => "on_item_hover",
         "on_resize" => "on_resize",
         "on_size_change" => "on_size_change",
         "tab_bar" => "tab_bar",

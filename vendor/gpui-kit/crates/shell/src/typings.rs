@@ -1526,6 +1526,14 @@ const ELEMENT_METHODS: &str = r#"    /**
      */
     on_item_click<Self extends Element>(this: Self, handler: (key: string, cx: Context) => void): Self;
     /**
+     * `handler(key, hovered, cx)` when the pointer enters (`hovered` true) or leaves a row of a virtual list.
+     * `key` is what the list's `get_key(index)` returned. Moving from one row to the next reports the
+     * leave and the enter in either order, so a script that tracks the hovered row clears it only when
+     * the key that left is the one it holds. One handler for the list rather than one per row, for the
+     * reason `on_item_click` gives.
+     */
+    on_item_hover<Self extends Element>(this: Self, handler: (key: string, hovered: boolean, cx: Context) => void): Self;
+    /**
      * `handler(key, event, cx)` on a secondary press — the right button — over
      * a row of a virtual list. `key` is what the list's `get_key(index)`
      * returned for that row, and `event` is the press as `on_mouse_down`
@@ -3996,6 +4004,7 @@ mod tests {
         "keep_mounted",
         "on_item_click",
         "on_item_secondary_click",
+        "on_item_hover",
         "on_change",
         "on_step",
         "on_open_change",

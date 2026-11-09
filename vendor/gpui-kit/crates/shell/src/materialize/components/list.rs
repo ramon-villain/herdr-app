@@ -87,6 +87,7 @@ pub(in crate::materialize) fn list(
     let handlers = ItemHandlers {
         click: behavior.on_item_click,
         secondary_click: behavior.on_item_secondary_click,
+        hover: behavior.on_item_hover,
     };
     let item_count = spec.item_count();
 
