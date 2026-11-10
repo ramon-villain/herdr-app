@@ -188,6 +188,16 @@ export function parsePushStates(text, tips) {
   return out;
 }
 
+/** `for-each-ref` output of the same format as parsePushStates: the remote branch each local branch pulls from, whatever its name. */
+export function parseUpstreams(text) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const [name, remote, ref, track] = line.split("\0");
+    if (name && remote && remote !== "." && ref?.startsWith("refs/heads/") && track !== "gone") out.set(name, { remote, branch: ref.slice(11) });
+  }
+  return out;
+}
+
 const escapeGlob = (name) => name.replace(/[\\*?[\]]/g, "\\$&");
 
 /**
@@ -328,6 +338,12 @@ export function createReader({ exec, readTextFile }) {
     return states;
   }
 
+  /** The upstream of every local branch that has a remote one, by branch name. */
+  async function upstreams(root, on) {
+    const r = await git(root, on, ["for-each-ref", "--format=%(refname:short)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)", "refs/heads"], 30000);
+    return r.code === 0 ? parseUpstreams(r.stdout) : new Map();
+  }
+
   /** One page of the log over every branch, remote branch, tag and HEAD (not the stash, which is drawn in its own section), parents after children. `skip` is the commits already loaded. */
   async function logPage(root, skip, on, size, refs) {
     const r = await git(root, on, ["log", ...refArgs(refs), "--topo-order", "--format=%H%x1f%P%x1f%an%x1f%ct%x1f%s%x1f%b%x1e", `--skip=${skip}`, `-n${size}`], 60000);
@@ -461,5 +477,5 @@ export function createReader({ exec, readTextFile }) {
     return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
   }
 
-  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests, hasCard, unmerged };
+  return { read, diff, diffBatch, repo, probe, aheadBehind, pushStates, upstreams, logPage, commit, fileDiff, search, clones, remoteUrl, pullRequests, hasCard, unmerged };
 }

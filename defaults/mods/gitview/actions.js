@@ -93,12 +93,12 @@ export function createActions({ exec, openLink, copy, notify, inbox, pushFailed 
      * checked out, which is pulled in place; any other branch is moved by a fetch that git refuses unless it is a fast-forward.
      * Resolves with whether the branch is now current.
      */
-    async pullBranch({ root, on, remote, branch, held }) {
+    async pullBranch({ root, on, remote, upstream, branch, held }) {
       const run = (args, cwd = root) => exec("git", args, { cwd, on, timeout: 120000 }).catch((e) => ({ code: -1, stdout: "", stderr: String(e) }));
       const tip = async () => (await run(["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).stdout.trim();
       notify({ title: `Pulling ${branch}`, body: `git ${held ? "pull" : "fetch"} ${remote}`, level: "info", timeout: 2500 });
       const before = await tip();
-      const pulled = held ? await run(["pull", "--ff-only", remote, branch], held) : await run(["fetch", remote, `${branch}:${branch}`]);
+      const pulled = held ? await run(["pull", "--ff-only", remote, upstream], held) : await run(["fetch", remote, `${upstream}:${branch}`]);
       if (pulled.code !== 0) {
         const output = (pulled.stderr ?? "").trim() || (pulled.stdout ?? "").trim() || "no output";
         const why = explain(PULL_KINDS, output, "Pull failed");
@@ -108,7 +108,7 @@ export function createActions({ exec, openLink, copy, notify, inbox, pushFailed 
       }
       const after = await tip();
       if (after === before) {
-        notify({ title: `${branch} is up to date`, body: `${remote}/${branch}`, level: "success", timeout: 3000 });
+        notify({ title: `${branch} is up to date`, body: `${remote}/${upstream}`, level: "success", timeout: 3000 });
         return true;
       }
       const count = Number((await run(["rev-list", "--count", `${before}..${after}`])).stdout.trim());
