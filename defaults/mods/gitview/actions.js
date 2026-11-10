@@ -4,24 +4,36 @@ import { CATALOG, commitUrl, compareUrl } from "./refmenu.js";
 
 const firstLine = (text) => (text ?? "").trim().split("\n")[0] || "no output";
 
+const AUTH = /Authentication failed|Permission denied|could not read Username|Invalid username or password|Repository not found|returned error: 40[13]/;
+const NETWORK = /Could not resolve host|Connection (timed out|refused|reset)|Network is unreachable|early EOF|timed out|unable to access/;
+
 // git push prints "To <url>" before the refusal, and the url says nothing about why.
 const PUSH_KINDS = [
   ["stale", /stale info/, "Rejected: the remote branch moved since it was last fetched"],
   ["behind", /non-fast-forward|fetch first|Updates were rejected/, "Rejected: the remote has commits this branch lacks (rebased?)"],
   ["hook", /remote rejected|hook declined|protected branch|GH006|GH013/, "Rejected by a hook or rule on the remote"],
-  ["auth", /Authentication failed|Permission denied|could not read Username|Invalid username or password|Repository not found|returned error: 40[13]/, "Not signed in, or not allowed to push"],
-  ["network", /Could not resolve host|Connection (timed out|refused|reset)|Network is unreachable|early EOF|timed out|unable to access/, "Could not reach the remote"],
+  ["auth", AUTH, "Not signed in, or not allowed to push"],
+  ["network", NETWORK, "Could not reach the remote"],
 ];
 
-/** Reads a failed push's stderr into its kind, the plain words for it and the git line that says so. */
-export function explainPush(stderr) {
+const PULL_KINDS = [
+  ["diverged", /Not possible to fast-forward|non-fast-forward|diverging branches|have diverged/, "Not pulled: the branch has commits the remote lacks, so it is not a fast-forward"],
+  ["dirty", /would be overwritten|local changes|unstaged changes|uncommitted changes/, "Not pulled: uncommitted changes in the checkout would be overwritten"],
+  ["auth", AUTH, "Not signed in, or not allowed to read the remote"],
+  ["network", NETWORK, "Could not reach the remote"],
+];
+
+function explain(kinds, stderr, fallback) {
   const lines = (stderr ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("To "));
-  for (const [kind, re, summary] of PUSH_KINDS) {
+  for (const [kind, re, summary] of kinds) {
     const line = lines.find((l) => re.test(l));
     if (line) return { kind, summary, line };
   }
-  return { kind: "other", summary: "Push failed", line: lines.find((l) => /rejected|error|fatal/i.test(l)) ?? lines[0] ?? "no output" };
+  return { kind: "other", summary: fallback, line: lines.find((l) => /rejected|error|fatal/i.test(l)) ?? lines[0] ?? "no output" };
 }
+
+/** Reads a failed push's stderr into its kind, the plain words for it and the git line that says so. */
+export const explainPush = (stderr) => explain(PUSH_KINDS, stderr, "Push failed");
 
 /**
  * @param {{ exec: Function, openLink: (url: string) => void, copy: (text: string) => void, notify: (n: object) => void, inbox: string, pushFailed?: (failure: object) => void }} host
@@ -32,7 +44,7 @@ export function createActions({ exec, openLink, copy, notify, inbox, pushFailed 
   function reportPush({ root, on, remote, branch, sha, push, lease }, pushed) {
     const output = (pushed.stderr ?? "").trim() || (pushed.stdout ?? "").trim() || "no output";
     const why = explainPush(output);
-    pushFailed({ ...why, output, root, on, remote, branch, sha, push: why.kind === "behind" && !lease ? push : null });
+    pushFailed({ ...why, title: `Push of ${branch} failed`, output, root, on, remote, branch, sha, push: why.kind === "behind" && !lease ? push : null });
     notify({ title: `Push of ${branch} failed`, body: `${why.summary} · ${why.line}`, level: "error", timeout: 86400000, action: { name: "gitview.pushError" } });
   }
 
@@ -73,6 +85,34 @@ export function createActions({ exec, openLink, copy, notify, inbox, pushFailed 
         return false;
       }
       notify({ title: `Pushed ${branch}`, body: `${remote}/${branch}`, level: "success", timeout: 3000 });
+      return true;
+    },
+
+    /**
+     * Fast-forwards `branch` to its upstream and never merges, rebases or forces. `held` is the path of the worktree that has the branch
+     * checked out, which is pulled in place; any other branch is moved by a fetch that git refuses unless it is a fast-forward.
+     * Resolves with whether the branch is now current.
+     */
+    async pullBranch({ root, on, remote, branch, held }) {
+      const run = (args, cwd = root) => exec("git", args, { cwd, on, timeout: 120000 }).catch((e) => ({ code: -1, stdout: "", stderr: String(e) }));
+      const tip = async () => (await run(["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).stdout.trim();
+      notify({ title: `Pulling ${branch}`, body: `git ${held ? "pull" : "fetch"} ${remote}`, level: "info", timeout: 2500 });
+      const before = await tip();
+      const pulled = held ? await run(["pull", "--ff-only", remote, branch], held) : await run(["fetch", remote, `${branch}:${branch}`]);
+      if (pulled.code !== 0) {
+        const output = (pulled.stderr ?? "").trim() || (pulled.stdout ?? "").trim() || "no output";
+        const why = explain(PULL_KINDS, output, "Pull failed");
+        pushFailed({ ...why, title: `Pull of ${branch} failed`, output, root, on, branch, sha: before, push: null });
+        notify({ title: `Pull of ${branch} failed`, body: `${why.summary} · ${why.line}`, level: "error", timeout: 86400000, action: { name: "gitview.pushError" } });
+        return false;
+      }
+      const after = await tip();
+      if (after === before) {
+        notify({ title: `${branch} is up to date`, body: `${remote}/${branch}`, level: "success", timeout: 3000 });
+        return true;
+      }
+      const count = Number((await run(["rev-list", "--count", `${before}..${after}`])).stdout.trim());
+      notify({ title: `${branch} moved`, body: `${before.slice(0, 7)} to ${after.slice(0, 7)} (${count} ${count === 1 ? "commit" : "commits"})`, level: "success", timeout: 6000 });
       return true;
     },
 

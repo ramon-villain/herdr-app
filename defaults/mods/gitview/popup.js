@@ -25,7 +25,7 @@ export function renderRefMenu(state, menu, t, choose, pickRef) {
 export function renderPushError(failure, t, font, { copy, force, close }) {
   const button = (id, label, onClick) => h_flex().id(id).h(28).px(12).items_center().rounded(7).border_1().border_color(t.input).bg(t.raised).text_color(t.foreground).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick).child(label);
   return v_flex().id("gv-push-error").size_full().min_h(0).p(18).gap(10).rounded(8).bg(t.popover).text_size(13)
-    .child(div().text_size(15).font_semibold().text_color(t.foreground).child(`Push of ${failure.branch} failed`))
+    .child(div().text_size(15).font_semibold().text_color(t.foreground).child(failure.title))
     .child(div().text_color(t.foreground).child(failure.summary))
     .child(div().font_family(font).text_size(12).text_color(t.muted).child(failure.line))
     .child(div().id("gv-push-output").flex_1().min_h(0).max_h(320).overflow_y_scrollbar().p(8).rounded(6).bg(t.background).font_family(font).text_size(11).text_color(t.muted).child(failure.output))
