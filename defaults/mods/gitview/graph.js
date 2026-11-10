@@ -50,7 +50,7 @@ export class Graph {
   /** @param {ReturnType<typeof import("./git.js").createReader>} git @param {() => { dir: string | null, on: string | null, space?: string | null }} locate @param {string | null} projects folder whose checkouts the repository dropdown lists */
   constructor(git, locate, scroll, projects = null, leftScroll = null, filesScroll = null) {
     this.git = git; this.locate = locate; this.scroll = scroll; this.projects = projects; this.leftScroll = leftScroll; this.filesScroll = filesScroll;
-    this.ask = null; this.pushes = new Map(); this.confirmPush = null; this.confirmDelete = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
+    this.ask = null; this.pushes = new Map(); this.upstreams = new Map(); this.confirmPush = null; this.confirmDelete = null; this.marked = null; this.kids = null; this.leftMarkKey = null;
     this.repo = null; this.repos = []; this.pickingRepo = false; this.ownRoot = null; this.restored = false;
     this.info = null; this.error = null; this.loading = false; this.status = "";
     this.worktree = null; this.ab = new Map(); this.wt = new Map(); this.wipSnap = null;
@@ -159,6 +159,7 @@ export class Graph {
     const info = this.info;
     const unpaired = this.prs.root === info.root ? [...this.prs.byBranch].filter(([, pr]) => pr.state === "OPEN").map(([name]) => name) : [];
     this.git.pushStates(info.root, this.on, info.remotes, unpaired).then((pushes) => { if (run === this.run) { this.pushes = pushes; this.leftCache = null; cx.notify(); } }).catch(() => null);
+    this.git.upstreams(info.root, this.on).then((upstreams) => { if (run === this.run) this.upstreams = upstreams; }).catch(() => null);
   }
 
   async page(run, cx) {
@@ -283,7 +284,7 @@ export class Graph {
       this.worktree = null; this.info = null; this.wipSnap = null; this.wipKey = null; this.wipGen++; this.leftCache = null;
       this.selected = null; this.detail = null; this.file = null; this.view = null; this.details.clear(); this.views.clear();
       this.hidden.clear(); this.soloed.clear(); this.web = null; this.pick = null; this.ab = new Map(); this.wt = new Map(); this.signature = null;
-      this.pushes = new Map(); this.confirmPush = null; this.confirmDelete = null;
+      this.pushes = new Map(); this.upstreams = new Map(); this.confirmPush = null; this.confirmDelete = null;
       this.reset();
       this.later(cx, (cx) => this.load(cx)).catch(() => null);
     }
@@ -792,7 +793,7 @@ export class Graph {
     const listed = refs.filter((r) => r.type === "commit" || this.keyRef(r)).map((r) => {
       if (r.type === "commit") return { type: "commit", name: r.name, sha: r.sha, ref: null, hidden: false, solo: false, pr: null };
       const ref = this.keyRef(r), pr = r.type === "tag" || this.prs.root !== this.info?.root ? null : this.prs.byBranch.get(branchOf(r)) ?? null;
-      return { type: r.type, name: r.name, sha: r.sha ?? null, ref, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), pr, push: r.type === "branch" ? this.pushes.get(r.name) ?? null : null };
+      return { type: r.type, name: r.name, sha: r.sha ?? null, ref, hidden: this.hidden.has(ref), solo: this.soloed.has(ref), pr, push: r.type === "branch" ? this.pushes.get(r.name) ?? null : null, pull: r.type === "branch" ? this.upstreams.get(r.name) ?? null : null };
     });
     const base = this.info?.base?.replace(/^[^/]+\//, "") ?? null;
     return listed.length ? { refs: listed, web: this.web, base, root: this.info?.root ?? null, on: this.on } : null;

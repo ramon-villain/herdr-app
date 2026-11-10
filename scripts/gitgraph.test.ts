@@ -1200,7 +1200,7 @@ test("Pull fast-forwards master from the remote, in place when it is checked out
   await git(work, "branch", "--set-upstream-to=origin/master", "master");
   const notices: any[] = [];
   const actions = pusher(notices);
-  const pull = (held?: string) => actions.pullBranch({ root: work, on: null, remote: "origin", branch: "master", held });
+  const pull = (held?: string) => actions.pullBranch({ root: work, on: null, remote: "origin", upstream: "master", branch: "master", held });
 
   expect(await pull()).toBe(true);
   expect(notices.at(-1)).toMatchObject({ title: "master is up to date", level: "success" });
@@ -1218,6 +1218,13 @@ test("Pull fast-forwards master from the remote, in place when it is checked out
   expect(await pull(work)).toBe(true);
   expect(await git(work, "rev-parse", "HEAD")).toBe(await git(other, "rev-parse", "master"));
   expect(notices.at(-1)).toMatchObject({ title: "master moved", body: expect.stringContaining("(1 commit)") });
+
+  await git(work, "branch", "mirror", "master~2");
+  await git(work, "branch", "--set-upstream-to=origin/master", "mirror");
+  expect((await reader.upstreams(work, null)).get("mirror")).toEqual({ remote: "origin", branch: "master" });
+  expect(await actions.pullBranch({ root: work, on: null, remote: "origin", upstream: "master", branch: "mirror" })).toBe(true);
+  expect(await git(work, "rev-parse", "mirror")).toBe(await git(other, "rev-parse", "master"));
+  expect(notices.at(-1)).toMatchObject({ title: "mirror moved", body: expect.stringContaining("(2 commits)") });
 });
 
 test("Pull refuses a branch that has diverged from the remote and says why, in either mode", async () => {
@@ -1232,7 +1239,7 @@ test("Pull refuses a branch that has diverged from the remote and says why, in e
 
   for (const held of [work, undefined]) {
     if (!held) await git(work, "checkout", "feat");
-    expect(await actions.pullBranch({ root: work, on: null, remote: "origin", branch: "master", held })).toBe(false);
+    expect(await actions.pullBranch({ root: work, on: null, remote: "origin", upstream: "master", branch: "master", held })).toBe(false);
     expect(await git(work, "rev-parse", "master")).toBe(mine);
     expect(notices.at(-1)).toMatchObject({ title: "Pull of master failed", level: "error", action: { name: "gitview.pushError" } });
     expect(notices.at(-1).body).toStartWith("Not pulled: the branch has commits the remote lacks");

@@ -40,7 +40,7 @@ export function prsByBranch(...lists) {
 
 /**
  * The rows of the menu for one ref, in order; `null` is a divider.
- * @param {{ type: "branch" | "remote" | "tag" | "commit", name: string, sha?: string, hidden?: boolean, solo?: boolean, pr?: { number: number, state: string } | null, push?: { remote: string, ahead: number, behind: number } | null }} ref
+ * @param {{ type: "branch" | "remote" | "tag" | "commit", name: string, sha?: string, hidden?: boolean, solo?: boolean, pr?: { number: number, state: string } | null, push?: { remote: string, ahead: number, behind: number } | null, pull?: { remote: string, branch: string } | null }} ref
  * @param {string | null} web the repository's page on GitHub, when origin is there
  */
 export function menuEntries(ref, web) {
@@ -62,7 +62,7 @@ export function menuEntries(ref, web) {
       ? { id: "forcePush", label: "Force push (with lease)" }
       : { id: "push", label: `Push ${push.ahead} ${push.ahead === 1 ? "commit" : "commits"} to ${push.remote}` });
   }
-  if (ref.type === "branch" && push) tail.push({ id: "pull", label: `Pull from ${push.remote}` });
+  if (ref.type === "branch" && ref.pull) tail.push({ id: "pull", label: `Pull from ${ref.pull.remote}/${ref.pull.branch}` });
   if (!isTag && web) {
     const pr = ref.pr, open = pr?.state === "OPEN";
     if (pr) tail.push({ id: "openPr", label: `Open PR #${pr.number}${open ? "" : ` (${pr.state.toLowerCase()})`}` });

@@ -158,7 +158,7 @@ export default class GitView extends View {
     else if (action === "createPr") this.openLink(compareUrl(web, base, branchOf(ref)));
     else if (action === "pushPr") await actions.pushAndCompare({ root, on, branch: ref.name, web, base, sha: ref.sha, push: ref.push });
     else if (action === "push") { if (await actions.pushBranch({ root, on, remote: ref.push.remote, branch: ref.name, sha: ref.sha, push: ref.push })) graph.load(cx); }
-    else if (action === "pull") { if (await actions.pullBranch({ root, on, remote: ref.push.remote, branch: ref.name, held: graph.info.worktrees.find((w) => w.branch === ref.name)?.path })) graph.load(cx); }
+    else if (action === "pull") { if (await actions.pullBranch({ root, on, remote: ref.pull.remote, upstream: ref.pull.branch, branch: ref.name, held: graph.info.worktrees.find((w) => w.branch === ref.name)?.path })) graph.load(cx); }
     else if (action === "deleteBranch") await this.askDelete({ root, on, name: ref.name, sha: ref.sha });
     else if (action === "forcePush") graph.confirmPush = { root, on, name: ref.name, sha: ref.sha, ...ref.push };
     cx.notify();
