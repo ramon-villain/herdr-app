@@ -1186,6 +1186,60 @@ test("Push sends only the new commits, and a rebased branch needs the lease on t
   expect(await git(bare, "rev-parse", "feat")).toBe(await git(work, "rev-parse", "feat"));
 });
 
+/** A second clone that pushes `count` commits to the remote's master. */
+async function remoteMoves(bare: string, count: number) {
+  const other = join(bare, "..", "other");
+  await git(bare, "clone", bare, other);
+  for (let i = 0; i < count; i++) await commit(other, `m${i}.txt`, `${i}\n`, `remote ${i}`);
+  await git(other, "push", "origin", "master");
+  return other;
+}
+
+test("Pull fast-forwards master from the remote, in place when it is checked out and by fetch when it is not", async () => {
+  const { bare, work } = await remoteFixture();
+  await git(work, "branch", "--set-upstream-to=origin/master", "master");
+  const notices: any[] = [];
+  const actions = pusher(notices);
+  const pull = (held?: string) => actions.pullBranch({ root: work, on: null, remote: "origin", branch: "master", held });
+
+  expect(await pull()).toBe(true);
+  expect(notices.at(-1)).toMatchObject({ title: "master is up to date", level: "success" });
+
+  const other = await remoteMoves(bare, 2);
+  const first = await git(work, "rev-parse", "master");
+  expect(await pull()).toBe(true);
+  expect(await git(work, "rev-parse", "master")).toBe(await git(other, "rev-parse", "master"));
+  expect(notices.at(-1)).toMatchObject({ title: "master moved", body: `${first.slice(0, 7)} to ${(await git(work, "rev-parse", "master")).slice(0, 7)} (2 commits)` });
+  expect(await git(work, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+
+  await commit(other, "n.txt", "n\n", "remote again");
+  await git(other, "push", "origin", "master");
+  await git(work, "checkout", "master");
+  expect(await pull(work)).toBe(true);
+  expect(await git(work, "rev-parse", "HEAD")).toBe(await git(other, "rev-parse", "master"));
+  expect(notices.at(-1)).toMatchObject({ title: "master moved", body: expect.stringContaining("(1 commit)") });
+});
+
+test("Pull refuses a branch that has diverged from the remote and says why, in either mode", async () => {
+  const { bare, work } = await remoteFixture();
+  await git(work, "branch", "--set-upstream-to=origin/master", "master");
+  await git(work, "checkout", "master");
+  await commit(work, "mine.txt", "mine\n", "local only");
+  await remoteMoves(bare, 1);
+  const notices: any[] = [], failures: any[] = [];
+  const actions = createActions({ exec, openLink() {}, copy() {}, notify: (n: any) => notices.push(n), inbox: "", pushFailed: (f: any) => failures.push(f) });
+  const mine = await git(work, "rev-parse", "master");
+
+  for (const held of [work, undefined]) {
+    if (!held) await git(work, "checkout", "feat");
+    expect(await actions.pullBranch({ root: work, on: null, remote: "origin", branch: "master", held })).toBe(false);
+    expect(await git(work, "rev-parse", "master")).toBe(mine);
+    expect(notices.at(-1)).toMatchObject({ title: "Pull of master failed", level: "error", action: { name: "gitview.pushError" } });
+    expect(notices.at(-1).body).toStartWith("Not pulled: the branch has commits the remote lacks");
+    expect(failures.at(-1)).toMatchObject({ kind: "diverged", title: "Pull of master failed", push: null });
+  }
+});
+
 test("a commit's detail carries the committer time beside the author time, which a rebase moves apart", async () => {
   const { work } = await fixture();
   await writeFile(join(work, "r.txt"), "r\n");
